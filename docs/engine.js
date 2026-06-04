@@ -125,7 +125,9 @@ EM.drawFrame = function (phi) {
   const ctx = cv.getContext("2d");
   ctx.clearRect(0, 0, W, H);
   const ext = d.extent, sc = 0.92 * Math.min(W, H) / (2 * ext);
-  const X = (x) => W / 2 + x * sc, Y = (y) => H / 2 - y * sc;
+  // y-down to match the Konva editor's screen coordinates (otherwise off-centre
+  // or rotated geometry appears vertically flipped vs. what was drawn)
+  const X = (x) => W / 2 + x * sc, Y = (y) => H / 2 + y * sc;
   const c = Math.cos(phi), s = Math.sin(phi), scale = fieldScale(d, kind);
   const n = d.tris, nodes = d.nodes;
   for (let e = 0; e < n.length; e += 3) {
