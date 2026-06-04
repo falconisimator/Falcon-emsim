@@ -84,6 +84,29 @@ function diverging(t) {
   return t >= 0 ? [255, (255 * (1 - a)) | 0, (255 * (1 - a)) | 0]
                 : [(255 * (1 - a)) | 0, (255 * (1 - a)) | 0, 255];
 }
+const rgb = (col) => `rgb(${col[0]},${col[1]},${col[2]})`;
+
+// Smooth (Gouraud) fill of the current triangle path given the 3 nodal values.
+// The field is linear across the element, so a single canvas linear gradient
+// along the value-gradient direction reproduces it exactly (no facets).
+function fillGouraud(ctx, x0, y0, x1, y1, x2, y2, v0, v1, v2, colorOf) {
+  const vmin = Math.min(v0, v1, v2), vmax = Math.max(v0, v1, v2);
+  if (vmax - vmin < 1e-12) { ctx.fillStyle = rgb(colorOf(v0)); ctx.fill(); return; }
+  const det = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+  if (Math.abs(det) < 1e-9) { ctx.fillStyle = rgb(colorOf((v0 + v1 + v2) / 3)); ctx.fill(); return; }
+  const gx = ((v1 - v0) * (y2 - y0) - (v2 - v0) * (y1 - y0)) / det;   // value gradient
+  const gy = ((v2 - v0) * (x1 - x0) - (v1 - v0) * (x2 - x0)) / det;
+  const gmag = Math.hypot(gx, gy);
+  if (gmag < 1e-12) { ctx.fillStyle = rgb(colorOf((v0 + v1 + v2) / 3)); ctx.fill(); return; }
+  const dx = gx / gmag, dy = gy / gmag;
+  const s0 = x0 * dx + y0 * dy, s1 = x1 * dx + y1 * dy, s2 = x2 * dx + y2 * dy;
+  const smin = Math.min(s0, s1, s2), smax = Math.max(s0, s1, s2);
+  const gr = ctx.createLinearGradient(dx * smin, dy * smin, dx * smax, dy * smax);
+  for (let f = 0; f <= 1.0001; f += 0.25) {
+    gr.addColorStop(Math.min(1, f), rgb(colorOf(vmin + f * (vmax - vmin))));
+  }
+  ctx.fillStyle = gr; ctx.fill();
+}
 
 // [unit, diverging?, display-scale factor]
 const FIELD_META = {
@@ -156,39 +179,63 @@ EM.drawFrame = function (phi, accUtil) {
   // or rotated geometry appears vertically flipped vs. what was drawn)
   const X = (x) => W / 2 + x * sc, Y = (y) => H / 2 + y * sc;
   const c = Math.cos(phi), s = Math.sin(phi), scale = fieldScale(d, kind);
-  const n = d.tris, nodes = d.nodes;
-  for (let e = 0; e < n.length; e += 3) {
-    const t = e / 3;
-    let col;
-    if (accUtil) {                                   // period-summed utilization map
-      const u = accUtil[t];
-      col = u < 0 ? [255, 255, 255] : diverging(Math.max(-1, Math.min(1, u - 1)));
-    } else if (kind === "J") {
-      col = diverging((d.J_re[t] * c - d.J_im[t] * s) / scale);
-    } else if (kind === "Jn") {   // instantaneous J / average-at-this-instant (i(t)/A)
+  const n = d.tris, nodes = d.nodes, NE = n.length / 3, NN = nodes.length / 2;
+
+  // 1) per-element field value + validity (air -> white) + value->colour map
+  const ev = new Float64Array(NE), valid = new Uint8Array(NE);
+  let colorOf;
+  if (accUtil) {
+    for (let t = 0; t < NE; t++) { ev[t] = accUtil[t]; valid[t] = accUtil[t] >= 0 ? 1 : 0; }
+    colorOf = (v) => diverging(Math.max(-1, Math.min(1, v - 1)));
+  } else if (kind === "J") {
+    for (let t = 0; t < NE; t++) { ev[t] = d.J_re[t] * c - d.J_im[t] * s; valid[t] = 1; }
+    colorOf = (v) => diverging(v / scale);
+  } else if (kind === "Jn") {   // instantaneous J / average-at-this-instant (i(t)/A)
+    for (let t = 0; t < NE; t++) {
       const ar = d.javg_re[t], ai = d.javg_im[t];
-      if (ar === 0 && ai === 0) { col = [255, 255, 255]; }   // air
+      if (ar === 0 && ai === 0) { valid[t] = 0; ev[t] = 1; }
       else {
         const amp = Math.hypot(ar, ai), fl = 0.12 * amp;
-        let denom = ar * c - ai * s;                 // average density at this instant
-        if (Math.abs(denom) < fl) denom = (denom < 0 ? -1 : 1) * fl;  // tame zero-crossing
-        const jinst = d.J_re[t] * c - d.J_im[t] * s;
-        col = diverging(Math.max(-1, Math.min(1, jinst / denom - 1)));  // 1=avg, >1 above, <1 below
+        let denom = ar * c - ai * s;
+        if (Math.abs(denom) < fl) denom = (denom < 0 ? -1 : 1) * fl;
+        ev[t] = (d.J_re[t] * c - d.J_im[t] * s) / denom; valid[t] = 1;
       }
-    } else if (kind === "A") {
-      col = diverging((d.Az_re[t] * c - d.Az_im[t] * s) / scale);
-    } else {
-      const bx = d.Bx_re[t] * c - d.Bx_im[t] * s, by = d.By_re[t] * c - d.By_im[t] * s;
-      col = inferno(Math.hypot(bx, by) / scale);
     }
-    const i0 = n[e] * 2, i1 = n[e + 1] * 2, i2 = n[e + 2] * 2;
-    ctx.fillStyle = `rgb(${col[0]},${col[1]},${col[2]})`;
-    ctx.beginPath();
-    ctx.moveTo(X(nodes[i0]), Y(nodes[i0 + 1]));
-    ctx.lineTo(X(nodes[i1]), Y(nodes[i1 + 1]));
-    ctx.lineTo(X(nodes[i2]), Y(nodes[i2 + 1]));
-    ctx.closePath();
-    ctx.fill();
+    colorOf = (v) => diverging(Math.max(-1, Math.min(1, v - 1)));
+  } else if (kind === "A") {
+    for (let t = 0; t < NE; t++) { ev[t] = d.Az_re[t] * c - d.Az_im[t] * s; valid[t] = 1; }
+    colorOf = (v) => diverging(v / scale);
+  } else {  // |B|
+    for (let t = 0; t < NE; t++) {
+      const bx = d.Bx_re[t] * c - d.Bx_im[t] * s, by = d.By_re[t] * c - d.By_im[t] * s;
+      ev[t] = Math.hypot(bx, by); valid[t] = 1;
+    }
+    colorOf = (v) => inferno(v / scale);
+  }
+
+  // 2) average element values onto nodes (area-weighted, valid elements only)
+  const nv = new Float64Array(NN), nw = new Float64Array(NN);
+  for (let e = 0; e < n.length; e += 3) {
+    const t = e / 3; if (!valid[t]) continue;
+    const i0 = n[e], i1 = n[e + 1], i2 = n[e + 2];
+    const ax = nodes[i0 * 2], ay = nodes[i0 * 2 + 1], bx = nodes[i1 * 2], by = nodes[i1 * 2 + 1];
+    const cx = nodes[i2 * 2], cy = nodes[i2 * 2 + 1];
+    const w = Math.abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)) + 1e-30;  // ~2*area
+    nv[i0] += w * ev[t]; nw[i0] += w;
+    nv[i1] += w * ev[t]; nw[i1] += w;
+    nv[i2] += w * ev[t]; nw[i2] += w;
+  }
+  for (let i = 0; i < NN; i++) if (nw[i] > 0) nv[i] /= nw[i];
+
+  // 3) smooth (Gouraud) fill per triangle; air -> white
+  for (let e = 0; e < n.length; e += 3) {
+    const t = e / 3, i0 = n[e], i1 = n[e + 1], i2 = n[e + 2];
+    const x0 = X(nodes[i0 * 2]), y0 = Y(nodes[i0 * 2 + 1]);
+    const x1 = X(nodes[i1 * 2]), y1 = Y(nodes[i1 * 2 + 1]);
+    const x2 = X(nodes[i2 * 2]), y2 = Y(nodes[i2 * 2 + 1]);
+    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.lineTo(x2, y2); ctx.closePath();
+    if (!valid[t]) { ctx.fillStyle = "#fff"; ctx.fill(); }
+    else fillGouraud(ctx, x0, y0, x1, y1, x2, y2, nv[i0], nv[i1], nv[i2], colorOf);
   }
 
   // flux lines: contours of instantaneous A_z = Re(a e^{j phi}) (marching triangles)
