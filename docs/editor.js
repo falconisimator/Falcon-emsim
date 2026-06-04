@@ -298,7 +298,12 @@ function fillResults(data) {
     `Term ${t.name}: V̇/L=${t.vgrad.toPrecision(3)} V/m, Z=${t.z_re.toExponential(2)}${t.z_im >= 0 ? "+" : ""}${t.z_im.toExponential(2)}j Ω/m`).join("<br>");
 }
 
-$("field").onchange = () => { if (EM._data) { EM.stop(); EM.drawFrame(0); } };
+function updateInfo() {
+  const el = $("fieldInfo");
+  if (!el.hidden) el.textContent = (EM.DESCRIPTIONS && EM.DESCRIPTIONS[$("field").value]) || "";
+}
+$("info").onclick = () => { const el = $("fieldInfo"); el.hidden = !el.hidden; updateInfo(); };
+$("field").onchange = () => { updateInfo(); if (EM._data) { EM.stop(); EM.drawFrame(0); } };
 $("play").onclick = () => EM.play();
 $("staticBtn").onclick = () => { EM.stop(); EM.drawFrame(0); };
 
@@ -322,5 +327,9 @@ defaultScene();
 document.addEventListener("em-ready", () => {
   document.getElementById("solve").disabled = false;
   document.getElementById("boot").textContent = "ready — edit, then click Solve";
-  if (location.search.includes("autosolve")) document.getElementById("solve").click();
+  if (location.search.includes("autosolve")) {
+    const m = location.search.match(/field=(\w+)/);
+    if (m) document.getElementById("field").value = m[1];
+    document.getElementById("solve").click();
+  }
 });

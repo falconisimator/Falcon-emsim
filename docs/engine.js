@@ -47,6 +47,7 @@ EM.solve = function (sceneDict) {
   data.region = Int32Array.from(data.region);
   data.a_re = Float64Array.from(data.a_re);
   data.a_im = Float64Array.from(data.a_im);
+  data.Jnorm = Float64Array.from(data.Jnorm);
   EM._data = data;
   EM._edges = computeEdges(data);  // material/conductor interface edges
   return data;
@@ -83,10 +84,31 @@ function diverging(t) {
                 : [(255 * (1 - a)) | 0, (255 * (1 - a)) | 0, 255];
 }
 
-const FIELD_META = { J: ["A/m²", true], B: ["T", false], A: ["Wb/m", true] };
+// [unit, diverging?, display-scale factor]
+const FIELD_META = {
+  J: ["A/mm²", true, 1e-6], B: ["T", false, 1], A: ["Wb/m", true, 1],
+  Jn: ["x avg", true, 1],
+};
+
+EM.DESCRIPTIONS = {
+  J: "Current density J_z(t) [A/mm2]. Instantaneous axial current, Re(J e^{j*phi}). " +
+     "Red = current out of the page (+z), blue = into the page (-z), white ~ 0. " +
+     "At AC it crowds toward surfaces and edges facing other phases (skin & proximity effect). " +
+     "Light-blue lines are flux lines (contours of A_z).",
+  B: "Flux density |B(t)| [T]. Magnitude of the in-plane magnetic field. " +
+     "Brighter = stronger; it peaks at conductor surfaces and between opposing currents and " +
+     "decays with distance. The light-blue flux lines run parallel to B.",
+  A: "Vector potential A_z(t) [Wb/m]. Its contours ARE the magnetic field lines - closer spacing " +
+     "means a stronger field. Diverging colors show the sign of the instantaneous value.",
+  Jn: "Normalized current density |J| / the terminal's average density (I/A); a steady (non-animated) " +
+      "measure. 1.0 (white) = a region carrying its fair share; >1 (red) = crowded/over-worked copper; " +
+      "<1 (blue) = under-used 'slow' regions. Shows how unevenly current spreads within a busbar.",
+};
 
 function drawColorbar(ctx, W, H, kind, scale) {
-  const [unit, div] = FIELD_META[kind];
+  const norm = kind === "Jn";
+  const meta = FIELD_META[kind], unit = meta[0], factor = meta[2];
+  const div = norm ? true : meta[1] === true;
   const bw = 16, bx = W - 70, by = 26, bh = Math.max(40, H - 70);
   for (let i = 0; i < bh; i++) {
     const f = 1 - i / bh;                       // top = 1, bottom = 0
@@ -97,16 +119,18 @@ function drawColorbar(ctx, W, H, kind, scale) {
   ctx.strokeStyle = "#333"; ctx.lineWidth = 1; ctx.strokeRect(bx + 0.5, by + 0.5, bw, bh);
   ctx.fillStyle = "#222"; ctx.font = "11px system-ui, sans-serif";
   ctx.textAlign = "left"; ctx.textBaseline = "middle";
-  const fmt = (v) => (v === 0 ? "0" : v.toExponential(1));
-  const ticks = div
-    ? [[by, scale], [by + bh / 2, 0], [by + bh, -scale]]
-    : [[by, scale], [by + bh / 2, scale / 2], [by + bh, 0]];
+  const fmt = (v) => (v === 0 ? "0" : Math.abs(v) >= 100 || Math.abs(v) < 0.1 ? v.toExponential(1) : v.toFixed(2));
+  let ticks;
+  if (norm) ticks = [[by, 2], [by + bh / 2, 1], [by + bh, 0]];
+  else if (div) ticks = [[by, scale * factor], [by + bh / 2, 0], [by + bh, -scale * factor]];
+  else ticks = [[by, scale * factor], [by + bh / 2, scale * factor / 2], [by + bh, 0]];
   for (const [y, v] of ticks) ctx.fillText(fmt(v), bx + bw + 5, y);
   ctx.textBaseline = "alphabetic";
   ctx.fillText(unit, bx - 2, by - 8);
 }
 
 function fieldScale(d, kind) {
+  if (kind === "Jn") return 1;  // already normalized
   let m = 1e-30;
   const n = d.J_re.length;
   if (kind === "J") for (let e = 0; e < n; e++) m = Math.max(m, Math.hypot(d.J_re[e], d.J_im[e]));
@@ -135,6 +159,10 @@ EM.drawFrame = function (phi) {
     let col;
     if (kind === "J") {
       col = diverging((d.J_re[t] * c - d.J_im[t] * s) / scale);
+    } else if (kind === "Jn") {
+      const jn = d.Jnorm[t];                         // 1=fair share, >1 hot, <1 slow
+      col = jn === 0 ? [238, 238, 238]               // air: neutral, not "slow"
+                     : diverging(Math.max(-1, Math.min(1, jn - 1)));
     } else if (kind === "A") {
       col = diverging((d.Az_re[t] * c - d.Az_im[t] * s) / scale);
     } else {
