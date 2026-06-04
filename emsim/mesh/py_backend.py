@@ -124,6 +124,13 @@ def mesh_model(
     interior = _poisson_fill(R, boundary, hfield, lc_surface, lc_far)
     pts = np.vstack([boundary, interior]) if interior.size else boundary
 
+    # Deduplicate coincident points. Overlapping conductor outlines (e.g. a
+    # composite T/L busbar made of several rectangles) sample the same point
+    # twice; duplicate nodes orphan stiffness rows -> "factor exactly singular".
+    quant = np.round(pts / (lc_surface * 1e-3)).astype(np.int64)
+    _, keep = np.unique(quant, axis=0, return_index=True)
+    pts = pts[np.sort(keep)]
+
     tris = Delaunay(pts).simplices
     centroids = pts[tris].mean(axis=1)
     inside = np.hypot(centroids[:, 0], centroids[:, 1]) <= R * (1 + 1e-9)
