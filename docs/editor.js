@@ -12,7 +12,9 @@ const MAT = {
 const snap = (v) => Math.round(v / GRID) * GRID;
 
 let conductors = [];    // model: list of {id,name,type,w,h,r,x,y,rot,group,material,busbar,node}
-let selected = null;
+let selected = null;     // representative conductor (drives the property panel)
+let selGroup = [];       // all selected conductors (whole busbar, or one shape in isolation)
+let dragStart = null;    // group-drag bookkeeping
 let uid = 1;
 let editBusbar = null;  // busbar id under isolation editing, or null
 
@@ -57,8 +59,28 @@ function makeNode(c) {
     node = new Konva.Circle({ ...common, radius: c.r });
   node.on("click tap", () => select(c));
   node.on("dblclick dbltap", () => enterIsolation(c.busbar));
-  node.on("dragmove", () => { node.x(snap(node.x())); node.y(snap(node.y())); });
-  node.on("dragend transformend", () => { syncFromNode(c); if (selected === c) fillProps(c); updateAreas(); });
+  node.on("dragstart", () => {
+    if (!selGroup.includes(c)) select(c);   // dragging selects the busbar first
+    dragStart = (selGroup.length > 1 && selGroup.includes(c))
+      ? { rx: node.x(), ry: node.y(), members: selGroup.map((m) => ({ m, x: m.node.x(), y: m.node.y() })) }
+      : null;
+  });
+  node.on("dragmove", () => {
+    if (dragStart) {   // move the whole busbar together
+      const dx = node.x() - dragStart.rx, dy = node.y() - dragStart.ry;
+      for (const it of dragStart.members) {
+        if (it.m === c) continue;
+        it.m.node.x(snap(it.x + dx)); it.m.node.y(snap(it.y + dy));
+      }
+    }
+    node.x(snap(node.x())); node.y(snap(node.y()));
+  });
+  node.on("dragend transformend", () => {
+    if (dragStart) { dragStart.members.forEach((it) => syncFromNode(it.m)); dragStart = null; }
+    else syncFromNode(c);
+    if (selected === c) fillProps(c);
+    updateAreas();
+  });
   node.on("transform", () => applyTransform(c));
   c.node = node;
   layer.add(node);
@@ -145,15 +167,28 @@ function applyIsolation() {
   layer.batchDraw();
 }
 
+function setHighlight(c, on) {
+  c.node.stroke(on ? "#1f6feb" : "#222");
+  c.node.strokeWidth(on ? 1.5 : 0.4);
+}
 function select(c) {
+  selGroup.forEach((m) => setHighlight(m, false));   // clear previous
+  if (!c) { selected = null; selGroup = []; tr.nodes([]); $("propPanel").hidden = true; layer.batchDraw(); return; }
   selected = c;
-  tr.nodes(c ? [c.node] : []);
-  // circles: keep aspect (radius); rects: free
-  tr.keepRatio(c && c.type === "circle");
-  tr.enabledAnchors(c && c.type === "circle"
-    ? ["top-left", "top-right", "bottom-left", "bottom-right"] : undefined);
-  document.getElementById("propPanel").hidden = !c;
-  if (c) fillProps(c);
+  // single click selects the whole busbar (so it moves together); inside
+  // isolation only the clicked shape is selected (edit it individually).
+  selGroup = editBusbar ? [c] : conductors.filter((k) => k.busbar === c.busbar);
+  selGroup.forEach((m) => setHighlight(m, true));
+  if (selGroup.length === 1) {   // resize/rotate handles only for a single shape
+    tr.nodes([c.node]);
+    tr.keepRatio(c.type === "circle");
+    tr.enabledAnchors(c.type === "circle"
+      ? ["top-left", "top-right", "bottom-left", "bottom-right"] : undefined);
+  } else {
+    tr.nodes([]);   // multi-shape busbar: drag to move all; edit shapes via double-click
+  }
+  $("propPanel").hidden = false;
+  fillProps(c);
   layer.batchDraw();
 }
 
@@ -163,23 +198,32 @@ stage.on("dblclick dbltap", (e) => { if (e.target === stage) exitIsolation(); })
 // ---- properties panel -----------------------------------------------------
 const $ = (id) => document.getElementById(id);
 function fillProps(c) {
+  const single = selGroup.length <= 1;   // geometry is per-shape; edit multi via isolation
   $("pW").value = c.type === "rect" ? c.w : c.r;
   $("pH").value = c.h;
   $("pHlabel").parentElement.style.display = c.type === "rect" ? "" : "none";
   $("pX").value = c.x; $("pY").value = c.y; $("pRot").value = c.rot;
   $("pPhase").value = c.group; $("pMat").value = c.material;
+  for (const id of ["pW", "pH", "pX", "pY", "pRot"]) $(id).disabled = !single;
 }
 function readProps() {
   const c = selected; if (!c) return;
-  if (c.type === "rect") { c.w = snap(+$("pW").value); c.h = snap(+$("pH").value); }
-  else c.r = snap(+$("pW").value);
-  c.x = snap(+$("pX").value); c.y = snap(+$("pY").value); c.rot = +$("pRot").value;
-  c.group = $("pPhase").value; c.material = $("pMat").value;
-  // rebuild node geometry
-  const n = c.node;
-  n.x(c.x); n.y(c.y); n.rotation(c.rot); n.fill(PHASE_COLOR[c.group] || "#888");
-  if (c.type === "rect") { n.width(c.w); n.height(c.h); n.offset({ x: c.w / 2, y: c.h / 2 }); }
-  else n.radius(c.r);
+  const single = selGroup.length <= 1;
+  if (single) {   // geometry applies to the one shape
+    if (c.type === "rect") { c.w = snap(+$("pW").value); c.h = snap(+$("pH").value); }
+    else c.r = snap(+$("pW").value);
+    c.x = snap(+$("pX").value); c.y = snap(+$("pY").value); c.rot = +$("pRot").value;
+    const n = c.node;
+    n.x(c.x); n.y(c.y); n.rotation(c.rot);
+    if (c.type === "rect") { n.width(c.w); n.height(c.h); n.offset({ x: c.w / 2, y: c.h / 2 }); }
+    else n.radius(c.r);
+  }
+  // phase + material apply to the whole busbar
+  const phase = $("pPhase").value, material = $("pMat").value;
+  for (const m of selGroup) {
+    m.group = phase; m.material = material;
+    m.node.fill(PHASE_COLOR[phase] || "#888");
+  }
   layer.batchDraw();
   updateAreas();
 }
@@ -204,7 +248,7 @@ function toSceneDict() {
 }
 function loadSceneDict(d) {
   conductors.forEach((c) => c.node.destroy());
-  conductors = []; selected = null; tr.nodes([]);
+  conductors = []; selected = null; selGroup = []; tr.nodes([]);
   uid = 1;
   $("freq").value = d.frequency; $("threephase").checked = d.three_phase;
   $("current").value = d.line_current;
