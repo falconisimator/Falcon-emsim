@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>emsim — Busbar EM Simulator (web)</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, sans-serif; margin: 0; display: flex; height: 100vh; }
+    #sidebar { width: 320px; padding: 16px; box-sizing: border-box; border-right: 1px solid #8884;
+               overflow-y: auto; }
+    #stage { flex: 1; display: flex; flex-direction: column; }
+    canvas { flex: 1; width: 100%; background: #fafbfc; }
+    h1 { font-size: 18px; margin: 0 0 8px; }
+    label { display: block; margin: 10px 0 2px; font-size: 13px; }
+    input, select, button { width: 100%; padding: 6px; box-sizing: border-box; font-size: 14px; }
+    button { cursor: pointer; margin-top: 10px; }
+    #status { font-size: 12px; color: #888; padding: 6px 16px; border-top: 1px solid #8884; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 12px; }
+    th, td { border: 1px solid #8883; padding: 3px 5px; text-align: right; }
+    th:first-child, td:first-child { text-align: left; }
+    .row { display: flex; gap: 6px; }
+  </style>
+</head>
+<body>
+  <div id="sidebar">
+    <h1>emsim — Busbar EM</h1>
+    <div style="font-size:12px;color:#888">2D magnetoquasistatic FEM, solved entirely in your
+      browser (Pyodide + WebAssembly). No server.</div>
+
+    <label>Frequency (Hz)</label>
+    <input id="freq" type="number" value="2000" step="100" />
+    <label>Terminal current |I| (A)</label>
+    <input id="current" type="number" value="1000" step="100" />
+    <label>Field</label>
+    <select id="field">
+      <option value="J">Current density J_z(t)</option>
+      <option value="B">Flux density |B(t)|</option>
+    </select>
+
+    <button id="solve" disabled>Solve</button>
+    <div class="row">
+      <button id="play" disabled>▶ Animate</button>
+      <button id="static" disabled>Static</button>
+    </div>
+
+    <table id="results" hidden>
+      <thead><tr><th>Phase</th><th>|I| (A)</th><th>Share %</th><th>Loss (W/m)</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div id="summary" style="font-size:12px;margin-top:8px"></div>
+  </div>
+
+  <div id="stage">
+    <canvas id="canvas"></canvas>
+    <div id="status">Loading Python runtime…</div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js"></script>
+  <script src="main.js"></script>
+</body>
+</html>

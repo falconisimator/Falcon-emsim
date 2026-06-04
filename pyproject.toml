@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "emsim"
+version = "0.1.0"
+description = "2D magnetoquasistatic FEM simulator for busbars (current sharing, losses, EMI, forces)"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.0",
+    "scipy>=1.13",
+    "matplotlib>=3.8",
+    "gmsh>=4.13",
+]
+
+[project.optional-dependencies]
+gui = ["PySide6>=6.6"]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+include = ["emsim*"]
+
+[tool.pytest.ini_options]
+testpaths = ["validation", "tests"]
