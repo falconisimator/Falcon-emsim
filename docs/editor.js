@@ -58,7 +58,7 @@ function makeNode(c) {
   node.on("click tap", () => select(c));
   node.on("dblclick dbltap", () => enterIsolation(c.busbar));
   node.on("dragmove", () => { node.x(snap(node.x())); node.y(snap(node.y())); });
-  node.on("dragend transformend", () => { syncFromNode(c); if (selected === c) fillProps(c); });
+  node.on("dragend transformend", () => { syncFromNode(c); if (selected === c) fillProps(c); updateAreas(); });
   node.on("transform", () => applyTransform(c));
   c.node = node;
   layer.add(node);
@@ -91,6 +91,22 @@ function phaseOfBusbar(bb) {
   const m = conductors.find((c) => c.busbar === bb);
   return m ? m.group : "A";
 }
+
+// live per-phase total cross-section area (mm^2), shown in geometry mode
+function shapeAreaMM2(c) {
+  if (c.type === "rect") return c.w * c.h;
+  if (c.type === "circle") return Math.PI * c.r * c.r;
+  return 0;
+}
+function updateAreas() {
+  const a = {};
+  for (const c of conductors) {
+    if (c.group == null) continue;
+    a[c.group] = (a[c.group] || 0) + shapeAreaMM2(c);
+  }
+  const parts = Object.keys(a).sort().map((g) => `${g}: ${a[g].toFixed(0)}`);
+  $("areas").innerHTML = parts.length ? "Area/phase (mm²) — " + parts.join(", ") : "";
+}
 function addConductor(type, group) {
   // inside isolation, new shapes join the edited busbar (same phase)
   const busbar = editBusbar || "bb" + uid;
@@ -103,6 +119,7 @@ function addConductor(type, group) {
   if (editBusbar) applyIsolation();
   select(c);
   layer.batchDraw();
+  updateAreas();
 }
 
 // ---- busbar isolation (double-click to edit a busbar) ---------------------
@@ -164,6 +181,7 @@ function readProps() {
   if (c.type === "rect") { n.width(c.w); n.height(c.h); n.offset({ x: c.w / 2, y: c.h / 2 }); }
   else n.radius(c.r);
   layer.batchDraw();
+  updateAreas();
 }
 ["pW", "pH", "pX", "pY", "pRot", "pPhase", "pMat"].forEach((id) =>
   $(id).addEventListener("input", readProps));
@@ -200,12 +218,13 @@ function loadSceneDict(d) {
     uid++; conductors.push(c); makeNode(c);
   }
   layer.batchDraw();
+  updateAreas();
 }
 
 // ---- toolbar / solve ------------------------------------------------------
 $("addBar").onclick = () => addConductor("rect", "A");
 $("addRound").onclick = () => addConductor("circle", "A");
-$("del").onclick = () => { if (selected) { selected.node.destroy(); conductors = conductors.filter((c) => c !== selected); select(null); layer.batchDraw(); } };
+$("del").onclick = () => { if (selected) { selected.node.destroy(); conductors = conductors.filter((c) => c !== selected); select(null); layer.batchDraw(); updateAreas(); } };
 
 // ---- copy / paste geometry ------------------------------------------------
 let clipboard = [];
@@ -233,6 +252,7 @@ function pasteClipboard() {
   exitIsolation();
   select(first);
   layer.batchDraw();
+  updateAreas();
 }
 $("copy").onclick = copySelection;
 $("paste").onclick = pasteClipboard;
@@ -296,8 +316,9 @@ function fillResults(data) {
   }
   const head =
     `<b>Total loss: ${data.total_loss.toPrecision(4)} W/m</b><br>` +
-    `${data.loss_coeff.toPrecision(3)} W/m per (A/mm²)² ` +
-    `(current-independent; ${data.applied_density.toPrecision(3)} A/mm² applied)<br>`;
+    `${data.loss_per_density.toPrecision(3)} W/m per A/mm²` +
+    ` &nbsp;|&nbsp; ${data.loss_coeff.toPrecision(3)} W/m per (A/mm²)² (current-indep.)<br>` +
+    `(applied ${data.applied_density.toPrecision(3)} A/mm²)<br>`;
   $("summary").innerHTML = head + data.terminals.map((t) =>
     `Term ${t.name}: V̇/L=${t.vgrad.toPrecision(3)} V/m, Z=${t.z_re.toExponential(2)}${t.z_im >= 0 ? "+" : ""}${t.z_im.toExponential(2)}j Ω/m`).join("<br>");
 }
@@ -320,6 +341,7 @@ function defaultScene() {
     uid++; conductors.push(c); makeNode(c);
   });
   layer.batchDraw();
+  updateAreas();
 }
 
 window.addEventListener("resize", () => {

@@ -68,8 +68,8 @@ def solve_scene(scene_dict) -> str:
     total_area = sum(g_area.values())  # m^2
     total_current = sum(abs(sc.current_for_group(g)) for g in g_area)  # A
     j_app = (total_current / total_area) / 1e6 if total_area > 0 else 0.0  # A/mm^2
-    # current-INDEPENDENT figure of merit (loss ~ J^2): W/m per (A/mm^2)^2.
-    loss_coeff = (res.total_loss / j_app**2) if j_app > 0 else 0.0
+    loss_per_density = (res.total_loss / j_app) if j_app > 0 else 0.0       # W/m per A/mm^2
+    loss_coeff = (res.total_loss / j_app**2) if j_app > 0 else 0.0          # W/m per (A/mm^2)^2
 
     ext = max(abs(c.placement.x) + abs(c.placement.y) + 1.6 * c.shape.bounding_radius()
               for c in sc.conductors)
@@ -87,8 +87,9 @@ def solve_scene(scene_dict) -> str:
         "extent": float(ext),
         "num_nodes": int(mesh.num_nodes),
         "total_loss": float(res.total_loss),
-        "applied_density": float(j_app),       # A/mm^2 (total I / total area)
-        "loss_coeff": float(loss_coeff),        # W/m per (A/mm^2)^2 (current-independent)
+        "applied_density": float(j_app),                # A/mm^2 (total I / total area)
+        "loss_per_density": float(loss_per_density),     # W/m per A/mm^2
+        "loss_coeff": float(loss_coeff),                 # W/m per (A/mm^2)^2 (current-independent)
         "conductors": [
             {"name": c.name, "group": c.group,
              "I": float(abs(c.current)),
