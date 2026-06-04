@@ -15,9 +15,23 @@ async function boot() {
   statusEl().textContent = "Loading numpy / scipy…";
   await pyodide.loadPackage(["numpy", "scipy", "micropip"]);
   statusEl().textContent = "Installing emsim…";
-  const wheel = new URL("wheels/emsim-0.1.0-py3-none-any.whl", location.href).href;
+  const wheelUrl = new URL("wheels/emsim-0.1.0-py3-none-any.whl", location.href).href;
   const micropip = pyodide.pyimport("micropip");
-  await micropip.install(wheel, false, false); // deps=False
+  // Fetch the wheel with cache bypassed and install it from the Pyodide FS, so
+  // a redeploy always loads the latest build (the wheel filename is fixed, so a
+  // plain URL install would otherwise serve a browser-cached copy). Falls back
+  // to a direct URL install if the emfs path is unsupported.
+  let ok = false;
+  try {
+    const resp = await fetch(wheelUrl, { cache: "no-store" });
+    const bytes = new Uint8Array(await resp.arrayBuffer());
+    pyodide.FS.writeFile("/emsim-0.1.0-py3-none-any.whl", bytes);
+    await micropip.install("emfs:/emsim-0.1.0-py3-none-any.whl", false, false);
+    ok = true;
+  } catch (e) {
+    console.warn("fresh-wheel install failed; falling back to cached URL", e);
+  }
+  if (!ok) await micropip.install(wheelUrl, false, false); // deps=False
   EM._solveFn = pyodide.runPython("from emsim.web import solve_scene\nsolve_scene");
   EM.ready = true;
   statusEl().textContent = "Ready.";

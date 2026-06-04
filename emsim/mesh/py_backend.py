@@ -137,6 +137,20 @@ def mesh_model(
     tris = tris[inside]
     centroids = centroids[inside]
 
+    # Drop degenerate (near-zero-area) triangles, then remove any node left
+    # unreferenced. Either would make the stiffness matrix exactly singular.
+    v = pts[tris]
+    area2 = np.abs((v[:, 1, 0] - v[:, 0, 0]) * (v[:, 2, 1] - v[:, 0, 1])
+                   - (v[:, 2, 0] - v[:, 0, 0]) * (v[:, 1, 1] - v[:, 0, 1]))
+    good = area2 > 1e-9 * np.median(area2)
+    tris = tris[good]
+    centroids = centroids[good]
+    used = np.unique(tris)
+    remap = np.full(pts.shape[0], -1, dtype=np.int64)
+    remap[used] = np.arange(used.size)
+    pts = pts[used]
+    tris = remap[tris]
+
     ordered = sorted(regions, key=lambda r: r[0].area())
     region_tag = np.empty(tris.shape[0], dtype=np.int64)
     for i, (cx, cy) in enumerate(centroids):
