@@ -187,8 +187,11 @@ EM.drawFrame = function (phi, accUtil) {
   if (accUtil) {
     for (let t = 0; t < NE; t++) { ev[t] = accUtil[t]; valid[t] = accUtil[t] >= 0 ? 1 : 0; }
     colorOf = (v) => diverging(Math.max(-1, Math.min(1, v - 1)));
-  } else if (kind === "J") {
-    for (let t = 0; t < NE; t++) { ev[t] = d.J_re[t] * c - d.J_im[t] * s; valid[t] = 1; }
+  } else if (kind === "J") {   // current density: no current in air -> hard edge at the bar
+    for (let t = 0; t < NE; t++) {
+      ev[t] = d.J_re[t] * c - d.J_im[t] * s;
+      valid[t] = d.region[t] >= 10 ? 1 : 0;   // conductor tags are >= 10; air -> white
+    }
     colorOf = (v) => diverging(v / scale);
   } else if (kind === "Jn") {   // instantaneous J / average-at-this-instant (i(t)/A)
     for (let t = 0; t < NE; t++) {
