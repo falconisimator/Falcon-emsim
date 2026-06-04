@@ -5,58 +5,89 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>emsim — Busbar EM Simulator (web)</title>
   <style>
-    :root { color-scheme: light dark; }
-    body { font-family: system-ui, sans-serif; margin: 0; display: flex; height: 100vh; }
-    #sidebar { width: 320px; padding: 16px; box-sizing: border-box; border-right: 1px solid #8884;
-               overflow-y: auto; }
-    #stage { flex: 1; display: flex; flex-direction: column; }
-    canvas { flex: 1; width: 100%; background: #fafbfc; }
-    h1 { font-size: 18px; margin: 0 0 8px; }
-    label { display: block; margin: 10px 0 2px; font-size: 13px; }
-    input, select, button { width: 100%; padding: 6px; box-sizing: border-box; font-size: 14px; }
-    button { cursor: pointer; margin-top: 10px; }
-    #status { font-size: 12px; color: #888; padding: 6px 16px; border-top: 1px solid #8884; }
-    table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 12px; }
-    th, td { border: 1px solid #8883; padding: 3px 5px; text-align: right; }
+    :root { color-scheme: light dark; --bd: #8884; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; height: 100vh; display: flex; flex-direction: column; }
+    #toolbar { display: flex; gap: 6px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--bd); flex-wrap: wrap; }
+    #toolbar button { padding: 5px 9px; cursor: pointer; }
+    #toolbar .sep { width: 1px; height: 22px; background: var(--bd); margin: 0 4px; }
+    #main { flex: 1; display: flex; min-height: 0; }
+    #editor { flex: 1; background: #fbfcfd; position: relative; }
+    #sidebar { width: 340px; border-left: 1px solid var(--bd); overflow-y: auto; padding: 10px; }
+    h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: #888; margin: 14px 0 6px; }
+    label { display: block; font-size: 12px; margin: 8px 0 2px; }
+    input, select { width: 100%; padding: 5px; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    button.primary { width: 100%; padding: 8px; margin-top: 10px; cursor: pointer; font-weight: 600; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+    th, td { border: 1px solid var(--bd); padding: 3px 5px; text-align: right; }
     th:first-child, td:first-child { text-align: left; }
-    .row { display: flex; gap: 6px; }
+    #resultCanvas { width: 100%; height: 240px; border: 1px solid var(--bd); margin-top: 8px; background: #fff; }
+    #status { padding: 5px 10px; border-top: 1px solid var(--bd); font-size: 12px; color: #888; }
+    #propPanel[hidden], #resultsBox[hidden] { display: none; }
+    .muted { font-size: 11px; color: #999; }
   </style>
 </head>
 <body>
-  <div id="sidebar">
-    <h1>emsim — Busbar EM</h1>
-    <div style="font-size:12px;color:#888">2D magnetoquasistatic FEM, solved entirely in your
-      browser (Pyodide + WebAssembly). No server.</div>
+  <div id="toolbar">
+    <strong>emsim</strong>
+    <span class="sep"></span>
+    <button id="addBar">+ Bar</button>
+    <button id="addRound">+ Round</button>
+    <button id="del">Delete</button>
+    <span class="sep"></span>
+    <button id="save">Save</button>
+    <button id="load">Load</button>
+    <input id="loadFile" type="file" accept=".json" hidden />
+    <span class="sep"></span>
+    <button id="solve" class="primary" style="width:auto" disabled>Solve</button>
+    <span id="boot" class="muted">loading runtime…</span>
+  </div>
 
-    <label>Frequency (Hz)</label>
-    <input id="freq" type="number" value="2000" step="100" />
-    <label>Terminal current |I| (A)</label>
-    <input id="current" type="number" value="1000" step="100" />
-    <label>Field</label>
-    <select id="field">
-      <option value="J">Current density J_z(t)</option>
-      <option value="B">Flux density |B(t)|</option>
-    </select>
+  <div id="main">
+    <div id="editor"></div>
+    <div id="sidebar">
+      <h2>Simulation</h2>
+      <label>Frequency (Hz)</label>
+      <input id="freq" type="number" value="2000" step="100" />
+      <label><input id="threephase" type="checkbox" checked style="width:auto"> Balanced 3-phase (A/B/C)</label>
+      <label>Terminal current |I| (A)</label>
+      <input id="current" type="number" value="1000" step="100" />
 
-    <button id="solve" disabled>Solve</button>
-    <div class="row">
-      <button id="play" disabled>▶ Animate</button>
-      <button id="static" disabled>Static</button>
+      <div id="propPanel" hidden>
+        <h2>Selected shape</h2>
+        <div class="grid2">
+          <div><label>Width / R (mm)</label><input id="pW" type="number" step="1"></div>
+          <div><label id="pHlabel">Height (mm)</label><input id="pH" type="number" step="1"></div>
+          <div><label>x (mm)</label><input id="pX" type="number" step="1"></div>
+          <div><label>y (mm)</label><input id="pY" type="number" step="1"></div>
+          <div><label>Rotation (°)</label><input id="pRot" type="number" step="5"></div>
+          <div><label>Phase</label>
+            <select id="pPhase"><option>A</option><option>B</option><option>C</option></select></div>
+        </div>
+        <label>Material</label>
+        <select id="pMat"><option>Copper</option><option>Aluminium</option><option>Steel</option></select>
+      </div>
+
+      <div id="resultsBox" hidden>
+        <h2>Results</h2>
+        <label>Field</label>
+        <select id="field">
+          <option value="J">Current density J_z(t)</option>
+          <option value="B">Flux density |B(t)|</option>
+        </select>
+        <div class="grid2"><button id="play">▶ Animate</button><button id="staticBtn">Static</button></div>
+        <canvas id="resultCanvas"></canvas>
+        <table id="results"><thead><tr><th>Phase</th><th>|I| A</th><th>Share</th><th>Loss W/m</th></tr></thead><tbody></tbody></table>
+        <div id="summary" class="muted" style="margin-top:6px"></div>
+      </div>
     </div>
-
-    <table id="results" hidden>
-      <thead><tr><th>Phase</th><th>|I| (A)</th><th>Share %</th><th>Loss (W/m)</th></tr></thead>
-      <tbody></tbody>
-    </table>
-    <div id="summary" style="font-size:12px;margin-top:8px"></div>
   </div>
+  <div id="status">Booting Python (Pyodide + WebAssembly)…</div>
 
-  <div id="stage">
-    <canvas id="canvas"></canvas>
-    <div id="status">Loading Python runtime…</div>
-  </div>
-
+  <script src="https://unpkg.com/konva@9/konva.min.js"></script>
   <script src="https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js"></script>
-  <script src="main.js"></script>
+  <script src="engine.js"></script>
+  <script src="editor.js"></script>
 </body>
 </html>

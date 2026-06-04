@@ -54,3 +54,19 @@ def test_export_gif_and_graphs(tmp_path) -> None:
     phases = sorted(round(math.degrees(math.atan2(c.current.imag, c.current.real)))
                     for c in result.conductors)
     assert phases == [-120, 0]
+
+
+def test_web_solve_scene() -> None:
+    """The browser adapter solves a scene dict (gmsh-free) and returns results."""
+    import json
+
+    from emsim.io import scene_to_dict
+    from emsim.web import solve_scene
+
+    sc = _small_scene()
+    sc.boundary = "kelvin"  # adapter must auto-downgrade to dirichlet for the web
+    out = json.loads(solve_scene(scene_to_dict(sc)))
+    assert out["num_nodes"] > 0 and len(out["tris"]) % 3 == 0
+    assert len(out["conductors"]) == 2 and len(out["terminals"]) == 2
+    assert len(out["J_re"]) == len(out["tris"]) // 3  # one J per element
+    assert out["total_loss"] > 0
