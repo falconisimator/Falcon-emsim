@@ -30,9 +30,31 @@ EM.solve = function (sceneDict) {
   const data = JSON.parse(json);
   data.nodes = Float64Array.from(data.nodes);
   data.tris = Int32Array.from(data.tris);
+  data.region = Int32Array.from(data.region);
+  data.a_re = Float64Array.from(data.a_re);
+  data.a_im = Float64Array.from(data.a_im);
   EM._data = data;
+  EM._edges = computeEdges(data);  // material/conductor interface edges
   return data;
 };
+
+// edges shared by two triangles of different region = conductor / material outline
+function computeEdges(d) {
+  const N = d.nodes.length / 2, t = d.tris, region = d.region;
+  const map = new Map();
+  for (let e = 0; e < t.length; e += 3) {
+    const r = region[e / 3], v = [t[e], t[e + 1], t[e + 2]];
+    for (let k = 0; k < 3; k++) {
+      const a = v[k], b = v[(k + 1) % 3], lo = Math.min(a, b), hi = Math.max(a, b);
+      const key = lo * N + hi, rec = map.get(key);
+      if (rec) rec.regs.push(r); else map.set(key, { a: lo, b: hi, regs: [r] });
+    }
+  }
+  const out = [];
+  for (const rec of map.values())
+    if (rec.regs.length === 2 && rec.regs[0] !== rec.regs[1]) out.push([rec.a, rec.b]);
+  return out;
+}
 
 // ---- field rendering on the result canvas --------------------------------
 function inferno(t) {
@@ -89,6 +111,44 @@ EM.drawFrame = function (phi) {
     ctx.closePath();
     ctx.fill();
   }
+
+  // flux lines: contours of instantaneous A_z = Re(a e^{j phi}) (marching triangles)
+  const ar = d.a_re, ai = d.a_im, nN = ar.length;
+  let amp = 1e-30;
+  const vv = new Float64Array(nN);
+  for (let i = 0; i < nN; i++) { vv[i] = ar[i] * c - ai[i] * s; amp = Math.max(amp, Math.hypot(ar[i], ai[i])); }
+  ctx.strokeStyle = "rgba(90,170,255,0.85)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  const LEV = 14;
+  for (let li = 1; li < LEV; li++) {
+    const L = -amp + (2 * amp * li) / LEV;
+    for (let e = 0; e < n.length; e += 3) {
+      const id = [n[e], n[e + 1], n[e + 2]];
+      const va = vv[id[0]] - L, vb = vv[id[1]] - L, vc = vv[id[2]] - L;
+      const pts = [];
+      const edge = (i, j, vi, vj) => {
+        if ((vi < 0) !== (vj < 0)) {
+          const t = vi / (vi - vj);
+          pts.push([nodes[id[i] * 2] + t * (nodes[id[j] * 2] - nodes[id[i] * 2]),
+                    nodes[id[i] * 2 + 1] + t * (nodes[id[j] * 2 + 1] - nodes[id[i] * 2 + 1])]);
+        }
+      };
+      edge(0, 1, va, vb); edge(1, 2, vb, vc); edge(2, 0, vc, va);
+      if (pts.length === 2) { ctx.moveTo(X(pts[0][0]), Y(pts[0][1])); ctx.lineTo(X(pts[1][0]), Y(pts[1][1])); }
+    }
+  }
+  ctx.stroke();
+
+  // conductor / material outlines on top
+  ctx.strokeStyle = "rgba(15,15,15,0.9)";
+  ctx.lineWidth = 1.3;
+  ctx.beginPath();
+  for (const [a, b] of EM._edges || []) {
+    ctx.moveTo(X(nodes[a * 2]), Y(nodes[a * 2 + 1]));
+    ctx.lineTo(X(nodes[b * 2]), Y(nodes[b * 2 + 1]));
+  }
+  ctx.stroke();
 };
 
 EM.play = function () {

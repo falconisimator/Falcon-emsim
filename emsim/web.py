@@ -29,11 +29,14 @@ def solve_scene(scene_dict) -> str:
         sc.boundary = "dirichlet"   # Kelvin mirror-disk needs gmsh
     sc.order = 1                    # P2 needs gmsh midside nodes
 
-    # web-tuned mesh: tighter air domain + coarser far field keeps the WASM solve fast
+    # web-tuned mesh: tighter air domain, but a finer far field than the first
+    # cut so the field map isn't visibly faceted (still browser-friendly).
     ext0 = max(abs(c.placement.x) + abs(c.placement.y) + c.shape.bounding_radius()
                for c in sc.conductors)
-    sc.domain_radius = 2.2 * ext0
-    sc.lc_far = 0.5 * ext0
+    min_char = min(c.shape.char_size() for c in sc.conductors)
+    sc.domain_radius = 2.3 * ext0
+    sc.lc_surface = min_char / 8.0
+    sc.lc_far = 0.18 * ext0
 
     sol = sc.solve()
     res = sc.analyse(sol)
@@ -51,6 +54,8 @@ def solve_scene(scene_dict) -> str:
     payload = {
         "nodes": mesh.nodes.ravel().tolist(),
         "tris": mesh.tris[phys][:, :3].ravel().tolist(),
+        "region": mesh.region_tag[phys].tolist(),   # per element, for edge outlines
+        "a_re": sol.a.real.tolist(), "a_im": sol.a.imag.tolist(),  # nodal A_z, for flux lines
         "Bx_re": B[:, 0].real.tolist(), "Bx_im": B[:, 0].imag.tolist(),
         "By_re": B[:, 1].real.tolist(), "By_im": B[:, 1].imag.tolist(),
         "J_re": J.real.tolist(), "J_im": J.imag.tolist(),
