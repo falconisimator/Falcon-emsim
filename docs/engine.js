@@ -47,14 +47,7 @@ EM.solve = function (sceneDict) {
   data.region = Int32Array.from(data.region);
   data.a_re = Float64Array.from(data.a_re);
   data.a_im = Float64Array.from(data.a_im);
-  data.javg = Float64Array.from(data.javg);
-  // peak utilization ratio (max |J|/Javg over conductors) sets the Jn colour scale
-  let mr = 1e-30;
-  for (let e = 0; e < data.javg.length; e++) {
-    const jg = data.javg[e];
-    if (jg > 0) mr = Math.max(mr, Math.hypot(data.J_re[e], data.J_im[e]) / jg);
-  }
-  data.jnScale = mr;
+  data.Jnorm = Float64Array.from(data.Jnorm);  // steady |J|/(I/A)
   EM._data = data;
   EM._edges = computeEdges(data);  // material/conductor interface edges
   return data;
@@ -107,15 +100,16 @@ EM.DESCRIPTIONS = {
      "decays with distance. The light-blue flux lines run parallel to B.",
   A: "Vector potential A_z(t) [Wb/m]. Its contours ARE the magnetic field lines - closer spacing " +
      "means a stronger field. Diverging colors show the sign of the instantaneous value.",
-  Jn: "Normalized current density: instantaneous J_z(t) divided by the terminal's average density " +
-      "(I/A), shown as multiples of average. White = no current at this instant; red/blue = current " +
-      "(out of / into the page) relative to average. Press Animate: 'slow' regions barely change while " +
-      "crowded regions swing hard — revealing under- and over-utilized copper. Air is white (no current).",
+  Jn: "Utilization = |J| / (I/A): the current-density magnitude divided by the terminal's average " +
+      "(applied current / cross-section area). A steady map (not animated). White = 1 (carrying its " +
+      "fair share); red >1 = above average (crowded/over-worked); blue <1 = below average (under-used " +
+      "'slow' copper). Air is white (no current). Reveals where copper is wasted vs. overloaded.",
 };
 
 function drawColorbar(ctx, W, H, kind, scale) {
+  const norm = kind === "Jn";
   const meta = FIELD_META[kind], unit = meta[0], factor = meta[2];
-  const div = meta[1] === true;
+  const div = norm ? true : meta[1] === true;
   const bw = 16, bx = W - 70, by = 26, bh = Math.max(40, H - 70);
   for (let i = 0; i < bh; i++) {
     const f = 1 - i / bh;                       // top = 1, bottom = 0
@@ -128,7 +122,8 @@ function drawColorbar(ctx, W, H, kind, scale) {
   ctx.textAlign = "left"; ctx.textBaseline = "middle";
   const fmt = (v) => (v === 0 ? "0" : Math.abs(v) >= 100 || Math.abs(v) < 0.1 ? v.toExponential(1) : v.toFixed(2));
   let ticks;
-  if (div) ticks = [[by, scale * factor], [by + bh / 2, 0], [by + bh, -scale * factor]];
+  if (norm) ticks = [[by, 2], [by + bh / 2, 1], [by + bh, 0]];   // centered at 1 (fair share)
+  else if (div) ticks = [[by, scale * factor], [by + bh / 2, 0], [by + bh, -scale * factor]];
   else ticks = [[by, scale * factor], [by + bh / 2, scale * factor / 2], [by + bh, 0]];
   for (const [y, v] of ticks) ctx.fillText(fmt(v), bx + bw + 5, y);
   ctx.textBaseline = "alphabetic";
@@ -136,7 +131,7 @@ function drawColorbar(ctx, W, H, kind, scale) {
 }
 
 function fieldScale(d, kind) {
-  if (kind === "Jn") return d.jnScale;  // peak |J|/Javg
+  if (kind === "Jn") return 1;  // centered-at-1 ratio, drawn directly
   let m = 1e-30;
   const n = d.J_re.length;
   if (kind === "J") for (let e = 0; e < n; e++) m = Math.max(m, Math.hypot(d.J_re[e], d.J_im[e]));
@@ -165,10 +160,10 @@ EM.drawFrame = function (phi) {
     let col;
     if (kind === "J") {
       col = diverging((d.J_re[t] * c - d.J_im[t] * s) / scale);
-    } else if (kind === "Jn") {
-      const jg = d.javg[t];                          // terminal average density
-      if (jg === 0) col = [255, 255, 255];           // air: no current -> white
-      else col = diverging(((d.J_re[t] * c - d.J_im[t] * s) / jg) / scale);
+    } else if (kind === "Jn") {                      // steady |J|/(I/A); not animated
+      const jn = d.Jnorm[t];
+      col = jn === 0 ? [255, 255, 255]               // air: no current -> white
+                     : diverging(Math.max(-1, Math.min(1, jn - 1)));  // 1=fair, >1 red, <1 blue
     } else if (kind === "A") {
       col = diverging((d.Az_re[t] * c - d.Az_im[t] * s) / scale);
     } else {

@@ -61,6 +61,8 @@ def solve_scene(scene_dict) -> str:
     for c in sc.conductors:
         if c.group is not None and g_area[c.group] > 0:
             javg[reg == c.region_tag] = abs(sc.current_for_group(c.group)) / g_area[c.group]
+    # steady utilization ratio |J| / (I/A): >1 above average, <1 below ("slow")
+    jnorm = np.where(javg > 0, np.abs(Jall) / np.where(javg > 0, javg, 1.0), 0.0)
 
     ext = max(abs(c.placement.x) + abs(c.placement.y) + 1.6 * c.shape.bounding_radius()
               for c in sc.conductors)
@@ -74,7 +76,7 @@ def solve_scene(scene_dict) -> str:
         "By_re": B[:, 1].real.tolist(), "By_im": B[:, 1].imag.tolist(),
         "J_re": J.real.tolist(), "J_im": J.imag.tolist(),
         "Az_re": Az.real.tolist(), "Az_im": Az.imag.tolist(),
-        "javg": javg[phys].tolist(),   # terminal average |J| (I/A); JS animates J/Javg
+        "Jnorm": jnorm[phys].tolist(),  # steady |J|/(I/A): >1 above avg, <1 below
         "extent": float(ext),
         "num_nodes": int(mesh.num_nodes),
         "total_loss": float(res.total_loss),
