@@ -63,6 +63,13 @@ def solve_scene(scene_dict) -> str:
         if c.group is not None and g_area[c.group] > 0:
             javg[reg == c.region_tag] = sc.current_for_group(c.group) / g_area[c.group]
 
+    # applied current density of the whole system = total terminal current / total
+    # conductor area, and the total loss normalized to it (W/m per A/mm^2).
+    total_area = sum(g_area.values())  # m^2
+    total_current = sum(abs(sc.current_for_group(g)) for g in g_area)  # A
+    j_app = (total_current / total_area) / 1e6 if total_area > 0 else 0.0  # A/mm^2
+    loss_per_density = (res.total_loss / j_app) if j_app > 0 else 0.0  # W/m per A/mm^2
+
     ext = max(abs(c.placement.x) + abs(c.placement.y) + 1.6 * c.shape.bounding_radius()
               for c in sc.conductors)
 
@@ -79,6 +86,8 @@ def solve_scene(scene_dict) -> str:
         "extent": float(ext),
         "num_nodes": int(mesh.num_nodes),
         "total_loss": float(res.total_loss),
+        "applied_density": float(j_app),            # A/mm^2 (total I / total area)
+        "loss_per_density": float(loss_per_density),  # W/m per A/mm^2
         "conductors": [
             {"name": c.name, "group": c.group,
              "I": float(abs(c.current)),
