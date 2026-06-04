@@ -51,6 +51,7 @@ function fieldScale(d, kind) {
   let m = 1e-30;
   const n = d.J_re.length;
   if (kind === "J") for (let e = 0; e < n; e++) m = Math.max(m, Math.hypot(d.J_re[e], d.J_im[e]));
+  else if (kind === "A") for (let e = 0; e < n; e++) m = Math.max(m, Math.hypot(d.Az_re[e], d.Az_im[e]));
   else for (let e = 0; e < n; e++)
     m = Math.max(m, Math.hypot(d.Bx_re[e], d.Bx_im[e]) + Math.hypot(d.By_re[e], d.By_im[e]));
   return m;
@@ -60,7 +61,7 @@ EM.drawFrame = function (phi) {
   const d = EM._data;
   if (!d) return;
   const kind = document.getElementById("field").value;
-  const cv = document.getElementById("resultCanvas");
+  const cv = document.getElementById("fieldCanvas");
   const W = (cv.width = cv.clientWidth), H = (cv.height = cv.clientHeight);
   const ctx = cv.getContext("2d");
   ctx.clearRect(0, 0, W, H);
@@ -70,10 +71,11 @@ EM.drawFrame = function (phi) {
   const n = d.tris, nodes = d.nodes;
   for (let e = 0; e < n.length; e += 3) {
     const t = e / 3;
-    let val, col;
+    let col;
     if (kind === "J") {
-      val = d.J_re[t] * c - d.J_im[t] * s;
-      col = diverging(val / scale);
+      col = diverging((d.J_re[t] * c - d.J_im[t] * s) / scale);
+    } else if (kind === "A") {
+      col = diverging((d.Az_re[t] * c - d.Az_im[t] * s) / scale);
     } else {
       const bx = d.Bx_re[t] * c - d.Bx_im[t] * s, by = d.By_re[t] * c - d.By_im[t] * s;
       col = inferno(Math.hypot(bx, by) / scale);
@@ -91,8 +93,13 @@ EM.drawFrame = function (phi) {
 
 EM.play = function () {
   EM.stop();
-  let phi = 0;
-  const tick = () => { phi = (phi + 0.08) % (2 * Math.PI); EM.drawFrame(phi); EM._anim = requestAnimationFrame(tick); };
+  const start = performance.now();
+  const tick = (now) => {
+    const period = +(document.getElementById("speed")?.value || 5000);  // ms per cycle
+    const phi = (2 * Math.PI * ((now - start) % period)) / period;
+    EM.drawFrame(phi);
+    EM._anim = requestAnimationFrame(tick);
+  };
   EM._anim = requestAnimationFrame(tick);
 };
 EM.stop = function () { if (EM._anim) cancelAnimationFrame(EM._anim); EM._anim = null; };

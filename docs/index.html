@@ -12,20 +12,25 @@
     #toolbar button { padding: 5px 9px; cursor: pointer; }
     #toolbar .sep { width: 1px; height: 22px; background: var(--bd); margin: 0 4px; }
     #main { flex: 1; display: flex; min-height: 0; }
-    #editor { flex: 1; background: #fbfcfd; position: relative; }
-    #sidebar { width: 340px; border-left: 1px solid var(--bd); overflow-y: auto; padding: 10px; }
+    #stage { flex: 1; position: relative; background: #fbfcfd; min-width: 0; }
+    #editor { position: absolute; inset: 0; }
+    #fieldOverlay { position: absolute; inset: 0; background: #fff; display: none; flex-direction: column; }
+    #fieldBar { display: flex; gap: 8px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--bd); }
+    #fieldBar select { width: auto; }
+    #fieldCanvas { flex: 1; width: 100%; min-height: 0; }
+    #sidebar { width: 330px; border-left: 1px solid var(--bd); overflow-y: auto; padding: 10px; }
     h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: #888; margin: 14px 0 6px; }
     label { display: block; font-size: 12px; margin: 8px 0 2px; }
     input, select { width: 100%; padding: 5px; }
     .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-    button.primary { width: 100%; padding: 8px; margin-top: 10px; cursor: pointer; font-weight: 600; }
+    button { cursor: pointer; }
     table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
     th, td { border: 1px solid var(--bd); padding: 3px 5px; text-align: right; }
     th:first-child, td:first-child { text-align: left; }
-    #resultCanvas { width: 100%; height: 240px; border: 1px solid var(--bd); margin-top: 8px; background: #fff; }
     #status { padding: 5px 10px; border-top: 1px solid var(--bd); font-size: 12px; color: #888; }
     #propPanel[hidden], #resultsBox[hidden] { display: none; }
     .muted { font-size: 11px; color: #999; }
+    #isoBadge { font-size: 12px; color: #1f6feb; font-weight: 600; }
   </style>
 </head>
 <body>
@@ -40,12 +45,32 @@
     <button id="load">Load</button>
     <input id="loadFile" type="file" accept=".json" hidden />
     <span class="sep"></span>
-    <button id="solve" class="primary" style="width:auto" disabled>Solve</button>
+    <button id="solve" disabled style="font-weight:600">Solve</button>
+    <span id="isoBadge"></span>
     <span id="boot" class="muted">loading runtime…</span>
   </div>
 
   <div id="main">
-    <div id="editor"></div>
+    <div id="stage">
+      <div id="editor"></div>
+      <div id="fieldOverlay">
+        <div id="fieldBar">
+          <button id="editBtn">← Edit geometry</button>
+          <label style="margin:0">Field</label>
+          <select id="field">
+            <option value="J">Current density J_z(t)</option>
+            <option value="B">Flux density |B(t)|</option>
+            <option value="A">Vector potential A_z(t)</option>
+          </select>
+          <button id="play">▶ Animate</button>
+          <button id="staticBtn">Static</button>
+          <label style="margin:0 0 0 8px">Speed</label>
+          <input id="speed" type="range" min="1500" max="10000" value="5000" step="500" style="width:120px" />
+        </div>
+        <canvas id="fieldCanvas"></canvas>
+      </div>
+    </div>
+
     <div id="sidebar">
       <h2>Simulation</h2>
       <label>Frequency (Hz)</label>
@@ -53,6 +78,7 @@
       <label><input id="threephase" type="checkbox" checked style="width:auto"> Balanced 3-phase (A/B/C)</label>
       <label>Terminal current |I| (A)</label>
       <input id="current" type="number" value="1000" step="100" />
+      <div class="muted" style="margin-top:6px">Double-click a bar to edit its busbar (add shapes into it). Esc exits.</div>
 
       <div id="propPanel" hidden>
         <h2>Selected shape</h2>
@@ -70,14 +96,7 @@
       </div>
 
       <div id="resultsBox" hidden>
-        <h2>Results</h2>
-        <label>Field</label>
-        <select id="field">
-          <option value="J">Current density J_z(t)</option>
-          <option value="B">Flux density |B(t)|</option>
-        </select>
-        <div class="grid2"><button id="play">▶ Animate</button><button id="staticBtn">Static</button></div>
-        <canvas id="resultCanvas"></canvas>
+        <h2>Results <button id="showField" style="float:right;font-size:11px">show field ▸</button></h2>
         <table id="results"><thead><tr><th>Phase</th><th>|I| A</th><th>Share</th><th>Loss W/m</th></tr></thead><tbody></tbody></table>
         <div id="summary" class="muted" style="margin-top:6px"></div>
       </div>
@@ -87,7 +106,7 @@
 
   <script src="https://unpkg.com/konva@9/konva.min.js"></script>
   <script src="https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js"></script>
-  <script src="engine.js"></script>
-  <script src="editor.js"></script>
+  <script src="engine.js?v=3"></script>
+  <script src="editor.js?v=3"></script>
 </body>
 </html>

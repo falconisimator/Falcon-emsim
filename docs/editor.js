@@ -14,6 +14,7 @@ const snap = (v) => Math.round(v / GRID) * GRID;
 let conductors = [];    // model: list of {id,name,type,w,h,r,x,y,rot,group,material,busbar,node}
 let selected = null;
 let uid = 1;
+let editBusbar = null;  // busbar id under isolation editing, or null
 
 // ---- Konva stage ----------------------------------------------------------
 const editorDiv = document.getElementById("editor");
@@ -55,6 +56,7 @@ function makeNode(c) {
   else
     node = new Konva.Circle({ ...common, radius: c.r });
   node.on("click tap", () => select(c));
+  node.on("dblclick dbltap", () => enterIsolation(c.busbar));
   node.on("dragmove", () => { node.x(snap(node.x())); node.y(snap(node.y())); });
   node.on("dragend transformend", () => { syncFromNode(c); if (selected === c) fillProps(c); });
   node.on("transform", () => applyTransform(c));
@@ -85,13 +87,44 @@ function syncFromNode(c) {              // commit Konva node back to the model (
   layer.batchDraw();
 }
 
+function phaseOfBusbar(bb) {
+  const m = conductors.find((c) => c.busbar === bb);
+  return m ? m.group : "A";
+}
 function addConductor(type, group) {
+  // inside isolation, new shapes join the edited busbar (same phase)
+  const busbar = editBusbar || "bb" + uid;
   const c = { id: uid, name: "C" + uid, type, w: 40, h: 10, r: 10, x: 0, y: 0, rot: 0,
-              group: group || "A", material: "Copper", busbar: "bb" + uid };
+              group: editBusbar ? phaseOfBusbar(editBusbar) : (group || "A"),
+              material: "Copper", busbar };
   uid++;
   conductors.push(c);
   makeNode(c);
+  if (editBusbar) applyIsolation();
   select(c);
+  layer.batchDraw();
+}
+
+// ---- busbar isolation (double-click to edit a busbar) ---------------------
+function enterIsolation(bb) {
+  editBusbar = bb;
+  applyIsolation();
+  document.getElementById("isoBadge").textContent =
+    `editing busbar (phase ${phaseOfBusbar(bb)}) — + Bar adds into it, Esc to exit`;
+}
+function exitIsolation() {
+  editBusbar = null;
+  conductors.forEach((c) => { c.node.opacity(1); c.node.draggable(true); c.node.listening(true); });
+  document.getElementById("isoBadge").textContent = "";
+  layer.batchDraw();
+}
+function applyIsolation() {
+  conductors.forEach((c) => {
+    const member = c.busbar === editBusbar;
+    c.node.opacity(member ? 1 : 0.22);
+    c.node.draggable(member);
+    c.node.listening(member);
+  });
   layer.batchDraw();
 }
 
@@ -108,6 +141,7 @@ function select(c) {
 }
 
 stage.on("click tap", (e) => { if (e.target === stage) select(null); });
+stage.on("dblclick dbltap", (e) => { if (e.target === stage) exitIsolation(); });
 
 // ---- properties panel -----------------------------------------------------
 const $ = (id) => document.getElementById(id);
@@ -172,7 +206,22 @@ function loadSceneDict(d) {
 $("addBar").onclick = () => addConductor("rect", "A");
 $("addRound").onclick = () => addConductor("circle", "A");
 $("del").onclick = () => { if (selected) { selected.node.destroy(); conductors = conductors.filter((c) => c !== selected); select(null); layer.batchDraw(); } };
-document.addEventListener("keydown", (e) => { if (e.key === "Delete" && selected) $("del").onclick(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Delete" && selected) $("del").onclick();
+  if (e.key === "Escape") { exitIsolation(); select(null); }
+});
+
+// ---- field view (large overlay) ------------------------------------------
+function showFieldView() {
+  document.getElementById("fieldOverlay").style.display = "flex";
+  requestAnimationFrame(() => { EM.stop(); EM.drawFrame(0); });
+}
+function hideFieldView() {
+  EM.stop();
+  document.getElementById("fieldOverlay").style.display = "none";
+}
+$("editBtn").onclick = hideFieldView;
+$("showField").onclick = showFieldView;
 
 $("save").onclick = () => {
   const blob = new Blob([JSON.stringify(toSceneDict(), null, 2)], { type: "application/json" });
@@ -194,8 +243,8 @@ $("solve").onclick = () => {
       const data = EM.solve(toSceneDict());
       const ms = (performance.now() - t0).toFixed(0);
       $("resultsBox").hidden = false;
-      EM.stop(); EM.drawFrame(0);
       fillResults(data);
+      showFieldView();   // switch the big canvas area to the field result
       $("status").textContent = `Solved in ${ms} ms (${data.num_nodes} nodes). Total loss ${data.total_loss.toPrecision(4)} W/m.`;
     } catch (err) {
       $("status").textContent = "Solve error: " + err; console.error(err);
@@ -230,11 +279,15 @@ function defaultScene() {
   layer.batchDraw();
 }
 
-window.addEventListener("resize", recenter);
+window.addEventListener("resize", () => {
+  recenter();
+  if (EM._data && document.getElementById("fieldOverlay").style.display === "flex" && !EM._anim)
+    EM.drawFrame(0);
+});
 recenter();
 defaultScene();
 document.addEventListener("em-ready", () => {
   document.getElementById("solve").disabled = false;
-  document.getElementById("boot").textContent = "ready — click Solve";
-  document.getElementById("solve").click();  // auto-solve the default scene
+  document.getElementById("boot").textContent = "ready — edit, then click Solve";
+  if (location.search.includes("autosolve")) document.getElementById("solve").click();
 });

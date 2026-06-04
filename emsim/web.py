@@ -41,6 +41,10 @@ def solve_scene(scene_dict) -> str:
     phys = mesh.region_tag != KELVIN_TAG
     B = element_B(sol)[phys]
     J = element_Jz(sol)[phys]
+    # per-element A_z (centroid) for the vector-potential view
+    from emsim.fem import shapes
+    n_c = shapes.shape_values(mesh.order, np.array([[1 / 3, 1 / 3, 1 / 3]]))[0]
+    Az = (sol.a[mesh.tris] @ n_c)[phys]
     ext = max(abs(c.placement.x) + abs(c.placement.y) + 1.6 * c.shape.bounding_radius()
               for c in sc.conductors)
 
@@ -50,6 +54,7 @@ def solve_scene(scene_dict) -> str:
         "Bx_re": B[:, 0].real.tolist(), "Bx_im": B[:, 0].imag.tolist(),
         "By_re": B[:, 1].real.tolist(), "By_im": B[:, 1].imag.tolist(),
         "J_re": J.real.tolist(), "J_im": J.imag.tolist(),
+        "Az_re": Az.real.tolist(), "Az_im": Az.imag.tolist(),
         "extent": float(ext),
         "num_nodes": int(mesh.num_nodes),
         "total_loss": float(res.total_loss),
