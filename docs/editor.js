@@ -306,6 +306,7 @@ $("info").onclick = () => { const el = $("fieldInfo"); el.hidden = !el.hidden; u
 $("field").onchange = () => { updateInfo(); if (EM._data) { EM.stop(); EM.drawFrame(0); } };
 $("play").onclick = () => EM.play();
 $("staticBtn").onclick = () => { EM.stop(); EM.drawFrame(0); };
+$("sumPeriod").onclick = () => EM.sumOverPeriod();
 
 // ---- default scene + boot --------------------------------------------------
 function defaultScene() {

@@ -47,7 +47,8 @@ EM.solve = function (sceneDict) {
   data.region = Int32Array.from(data.region);
   data.a_re = Float64Array.from(data.a_re);
   data.a_im = Float64Array.from(data.a_im);
-  data.Jnorm = Float64Array.from(data.Jnorm);  // steady |J|/(I/A)
+  data.javg_re = Float64Array.from(data.javg_re);  // complex terminal avg density I/A
+  data.javg_im = Float64Array.from(data.javg_im);
   EM._data = data;
   EM._edges = computeEdges(data);  // material/conductor interface edges
   return data;
@@ -100,10 +101,11 @@ EM.DESCRIPTIONS = {
      "decays with distance. The light-blue flux lines run parallel to B.",
   A: "Vector potential A_z(t) [Wb/m]. Its contours ARE the magnetic field lines - closer spacing " +
      "means a stronger field. Diverging colors show the sign of the instantaneous value.",
-  Jn: "Utilization = |J| / (I/A): the current-density magnitude divided by the terminal's average " +
-      "(applied current / cross-section area). A steady map (not animated). White = 1 (carrying its " +
-      "fair share); red >1 = above average (crowded/over-worked); blue <1 = below average (under-used " +
-      "'slow' copper). Air is white (no current). Reveals where copper is wasted vs. overloaded.",
+  Jn: "Current density relative to the terminal's average AT THIS INSTANT: J_z(t) / (i(t)/A). " +
+      "Animate it. White = 1 (equal to the instantaneous average), red >1 = above, blue <1 = below. " +
+      "Because eddy currents lag, the pattern shifts through the cycle (near the current zero-crossing " +
+      "the average ~ 0, so it briefly saturates). Click 'Σ over period' to sum it into the steady " +
+      "under/over-utilization map (RMS |J| / (I/A)). Air is white.",
 };
 
 function drawColorbar(ctx, W, H, kind, scale) {
@@ -141,10 +143,10 @@ function fieldScale(d, kind) {
   return m;
 }
 
-EM.drawFrame = function (phi) {
+EM.drawFrame = function (phi, accUtil) {
   const d = EM._data;
   if (!d) return;
-  const kind = document.getElementById("field").value;
+  const kind = accUtil ? "Jn" : document.getElementById("field").value;
   const cv = document.getElementById("fieldCanvas");
   const W = (cv.width = cv.clientWidth), H = (cv.height = cv.clientHeight);
   const ctx = cv.getContext("2d");
@@ -158,12 +160,21 @@ EM.drawFrame = function (phi) {
   for (let e = 0; e < n.length; e += 3) {
     const t = e / 3;
     let col;
-    if (kind === "J") {
+    if (accUtil) {                                   // period-summed utilization map
+      const u = accUtil[t];
+      col = u < 0 ? [255, 255, 255] : diverging(Math.max(-1, Math.min(1, u - 1)));
+    } else if (kind === "J") {
       col = diverging((d.J_re[t] * c - d.J_im[t] * s) / scale);
-    } else if (kind === "Jn") {                      // steady |J|/(I/A); not animated
-      const jn = d.Jnorm[t];
-      col = jn === 0 ? [255, 255, 255]               // air: no current -> white
-                     : diverging(Math.max(-1, Math.min(1, jn - 1)));  // 1=fair, >1 red, <1 blue
+    } else if (kind === "Jn") {   // instantaneous J / average-at-this-instant (i(t)/A)
+      const ar = d.javg_re[t], ai = d.javg_im[t];
+      if (ar === 0 && ai === 0) { col = [255, 255, 255]; }   // air
+      else {
+        const amp = Math.hypot(ar, ai), fl = 0.12 * amp;
+        let denom = ar * c - ai * s;                 // average density at this instant
+        if (Math.abs(denom) < fl) denom = (denom < 0 ? -1 : 1) * fl;  // tame zero-crossing
+        const jinst = d.J_re[t] * c - d.J_im[t] * s;
+        col = diverging(Math.max(-1, Math.min(1, jinst / denom - 1)));  // 1=avg, >1 above, <1 below
+      }
     } else if (kind === "A") {
       col = diverging((d.Az_re[t] * c - d.Az_im[t] * s) / scale);
     } else {
@@ -233,5 +244,31 @@ EM.play = function () {
   EM._anim = requestAnimationFrame(tick);
 };
 EM.stop = function () { if (EM._anim) cancelAnimationFrame(EM._anim); EM._anim = null; };
+
+// Sum the instantaneous current over one period -> steady under/over-utilization.
+// Accumulates J(t)^2 frame by frame (visibly building up); converges to the RMS
+// ratio |J|/(I/A): 1 = fair share, >1 over-utilized, <1 under-utilized.
+EM.sumOverPeriod = function (frames = 90) {
+  EM.stop();
+  const d = EM._data; if (!d) return;
+  const n = d.tris.length / 3;
+  const acc = new Float64Array(n);
+  const util = new Float64Array(n);
+  let k = 0;
+  const step = () => {
+    const phi = (2 * Math.PI * k) / frames, c = Math.cos(phi), s = Math.sin(phi);
+    for (let t = 0; t < n; t++) {
+      const j = d.J_re[t] * c - d.J_im[t] * s;
+      acc[t] += j * j;
+      const amp = Math.hypot(d.javg_re[t], d.javg_im[t]);
+      util[t] = amp > 0 ? Math.sqrt(2 * acc[t] / (k + 1)) / amp : -1;  // RMS|J| / (I/A)
+    }
+    EM.drawFrame(0, util);
+    k++;
+    if (k <= frames) EM._anim = requestAnimationFrame(step);
+    else EM._anim = null;
+  };
+  EM._anim = requestAnimationFrame(step);
+};
 
 boot().catch((e) => { statusEl().textContent = "Boot error: " + e; console.error(e); });

@@ -48,21 +48,20 @@ def solve_scene(scene_dict) -> str:
     from emsim.fem import shapes
     n_c = shapes.shape_values(mesh.order, np.array([[1 / 3, 1 / 3, 1 / 3]]))[0]
     Az = (sol.a[mesh.tris] @ n_c)[phys]
-    # normalized current density: |J| / (terminal's average DC density I/A). 1.0 = a
-    # region carrying its fair share; >1 crowded ("hot"), <1 under-used ("slow").
+    # complex average current density per terminal, I_group / A_group. The JS uses
+    # it to form J(x,t) / (i(t)/A) -- current density relative to the terminal's
+    # average AT THAT INSTANT -- and the steady |J|/avg utilization (period sum).
     from collections import defaultdict
 
-    reg, areas, Jall = mesh.region_tag, mesh.areas(), element_Jz(sol)
+    reg, areas = mesh.region_tag, mesh.areas()
     g_area = defaultdict(float)
     for c in sc.conductors:
         if c.group is not None:
             g_area[c.group] += areas[reg == c.region_tag].sum()
-    javg = np.zeros(reg.shape[0])
+    javg = np.zeros(reg.shape[0], dtype=np.complex128)
     for c in sc.conductors:
         if c.group is not None and g_area[c.group] > 0:
-            javg[reg == c.region_tag] = abs(sc.current_for_group(c.group)) / g_area[c.group]
-    # steady utilization ratio |J| / (I/A): >1 above average, <1 below ("slow")
-    jnorm = np.where(javg > 0, np.abs(Jall) / np.where(javg > 0, javg, 1.0), 0.0)
+            javg[reg == c.region_tag] = sc.current_for_group(c.group) / g_area[c.group]
 
     ext = max(abs(c.placement.x) + abs(c.placement.y) + 1.6 * c.shape.bounding_radius()
               for c in sc.conductors)
@@ -76,7 +75,7 @@ def solve_scene(scene_dict) -> str:
         "By_re": B[:, 1].real.tolist(), "By_im": B[:, 1].imag.tolist(),
         "J_re": J.real.tolist(), "J_im": J.imag.tolist(),
         "Az_re": Az.real.tolist(), "Az_im": Az.imag.tolist(),
-        "Jnorm": jnorm[phys].tolist(),  # steady |J|/(I/A): >1 above avg, <1 below
+        "javg_re": javg[phys].real.tolist(), "javg_im": javg[phys].imag.tolist(),
         "extent": float(ext),
         "num_nodes": int(mesh.num_nodes),
         "total_loss": float(res.total_loss),
