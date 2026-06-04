@@ -39,6 +39,8 @@
     <span class="sep"></span>
     <button id="addBar">+ Bar</button>
     <button id="addRound">+ Round</button>
+    <button id="copy">Copy</button>
+    <button id="paste">Paste</button>
     <button id="del">Delete</button>
     <span class="sep"></span>
     <button id="save">Save</button>
@@ -78,7 +80,12 @@
       <label><input id="threephase" type="checkbox" checked style="width:auto"> Balanced 3-phase (A/B/C)</label>
       <label>Terminal current |I| (A)</label>
       <input id="current" type="number" value="1000" step="100" />
-      <div class="muted" style="margin-top:6px">Double-click a bar to edit its busbar (add shapes into it). Esc exits.</div>
+      <div class="muted" style="margin-top:6px">Phase:
+        <span style="color:#d65f5f;font-weight:700">■ A</span>
+        <span style="color:#5f9ed6;font-weight:700">■ B</span>
+        <span style="color:#5fd68a;font-weight:700">■ C</span></div>
+      <div class="muted" style="margin-top:6px">Double-click a bar to edit its busbar (add shapes into it).
+        Ctrl+C / Ctrl+V to copy-paste. Esc exits.</div>
 
       <div id="propPanel" hidden>
         <h2>Selected shape</h2>
@@ -106,7 +113,7 @@
 
   <script src="https://unpkg.com/konva@9/konva.min.js"></script>
   <script src="https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js"></script>
-  <script src="engine.js?v=5"></script>
-  <script src="editor.js?v=5"></script>
+  <script src="engine.js?v=6"></script>
+  <script src="editor.js?v=6"></script>
 </body>
 </html>

@@ -206,9 +206,42 @@ function loadSceneDict(d) {
 $("addBar").onclick = () => addConductor("rect", "A");
 $("addRound").onclick = () => addConductor("circle", "A");
 $("del").onclick = () => { if (selected) { selected.node.destroy(); conductors = conductors.filter((c) => c !== selected); select(null); layer.batchDraw(); } };
+
+// ---- copy / paste geometry ------------------------------------------------
+let clipboard = [];
+function copySelection() {
+  let src;
+  if (editBusbar) src = conductors.filter((c) => c.busbar === editBusbar);  // whole busbar
+  else if (selected) src = conductors.filter((c) => c.busbar === selected.busbar);
+  else return;
+  clipboard = src.map((c) => ({ ...c, node: undefined }));  // snapshot, drop node ref
+  document.getElementById("isoBadge").textContent = `copied ${clipboard.length} shape(s)`;
+}
+function pasteClipboard() {
+  if (!clipboard.length) return;
+  const step = 2 * GRID;
+  const remap = {};
+  let first = null;
+  for (const s of clipboard) {
+    if (!(s.busbar in remap)) remap[s.busbar] = "bb" + uid++;  // each source busbar -> new id
+    const c = { ...s, node: undefined, id: uid, name: "C" + uid,
+                busbar: remap[s.busbar], x: s.x + step, y: s.y + step };
+    uid++;
+    conductors.push(c); makeNode(c);
+    first = first || c;
+  }
+  exitIsolation();
+  select(first);
+  layer.batchDraw();
+}
+$("copy").onclick = copySelection;
+$("paste").onclick = pasteClipboard;
+
 document.addEventListener("keydown", (e) => {
   if (e.key === "Delete" && selected) $("del").onclick();
   if (e.key === "Escape") { exitIsolation(); select(null); }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") { copySelection(); e.preventDefault(); }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") { pasteClipboard(); e.preventDefault(); }
 });
 
 // ---- field view (large overlay) ------------------------------------------

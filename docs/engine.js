@@ -83,6 +83,29 @@ function diverging(t) {
                 : [(255 * (1 - a)) | 0, (255 * (1 - a)) | 0, 255];
 }
 
+const FIELD_META = { J: ["A/m²", true], B: ["T", false], A: ["Wb/m", true] };
+
+function drawColorbar(ctx, W, H, kind, scale) {
+  const [unit, div] = FIELD_META[kind];
+  const bw = 16, bx = W - 70, by = 26, bh = Math.max(40, H - 70);
+  for (let i = 0; i < bh; i++) {
+    const f = 1 - i / bh;                       // top = 1, bottom = 0
+    const col = div ? diverging(2 * f - 1) : inferno(f);
+    ctx.fillStyle = `rgb(${col[0]},${col[1]},${col[2]})`;
+    ctx.fillRect(bx, by + i, bw, 1);
+  }
+  ctx.strokeStyle = "#333"; ctx.lineWidth = 1; ctx.strokeRect(bx + 0.5, by + 0.5, bw, bh);
+  ctx.fillStyle = "#222"; ctx.font = "11px system-ui, sans-serif";
+  ctx.textAlign = "left"; ctx.textBaseline = "middle";
+  const fmt = (v) => (v === 0 ? "0" : v.toExponential(1));
+  const ticks = div
+    ? [[by, scale], [by + bh / 2, 0], [by + bh, -scale]]
+    : [[by, scale], [by + bh / 2, scale / 2], [by + bh, 0]];
+  for (const [y, v] of ticks) ctx.fillText(fmt(v), bx + bw + 5, y);
+  ctx.textBaseline = "alphabetic";
+  ctx.fillText(unit, bx - 2, by - 8);
+}
+
 function fieldScale(d, kind) {
   let m = 1e-30;
   const n = d.J_re.length;
@@ -163,6 +186,8 @@ EM.drawFrame = function (phi) {
     ctx.lineTo(X(nodes[b * 2]), Y(nodes[b * 2 + 1]));
   }
   ctx.stroke();
+
+  drawColorbar(ctx, W, H, kind, scale);
 };
 
 EM.play = function () {
