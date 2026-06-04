@@ -72,29 +72,47 @@ function makeNode(c) {
         if (it.m === c) continue;
         it.m.node.x(snap(it.x + dx)); it.m.node.y(snap(it.y + dy));
       }
+      tr.forceUpdate();   // keep the selection box on the moving group
     }
     node.x(snap(node.x())); node.y(snap(node.y()));
   });
-  node.on("dragend transformend", () => {
+  node.on("dragend", () => {
     if (dragStart) { dragStart.members.forEach((it) => syncFromNode(it.m)); dragStart = null; }
     else syncFromNode(c);
     if (selected === c) fillProps(c);
+    tr.forceUpdate(); updateAreas();
+  });
+  // rotate/scale via the transformer handles — bake the accumulated scale &
+  // rotation into the model once the gesture ends (works for a whole group).
+  node.on("transformend", () => {
+    const grp = selGroup.length > 1 && selGroup.includes(c) ? selGroup : [c];
+    grp.forEach((m) => bakeNode(m, selGroup.length <= 1));
+    tr.forceUpdate();
+    if (selected) fillProps(selected);
     updateAreas();
   });
-  node.on("transform", () => applyTransform(c));
   c.node = node;
   layer.add(node);
   return node;
 }
-function applyTransform(c) {           // live during resize: fold scale into size
+// commit a node's transform (scale folded into size, rotation, position) into
+// the model. snapPos: snap the centre to the grid (single-shape edits only —
+// for a rotated/scaled group, snapping each piece would distort the rigid shape).
+function bakeNode(c, snapPos) {
   const n = c.node;
+  const sx = Math.abs(n.scaleX()), sy = Math.abs(n.scaleY());
   if (c.type === "rect") {
-    const w = Math.max(GRID, n.width() * n.scaleX()), h = Math.max(GRID, n.height() * n.scaleY());
-    n.scaleX(1); n.scaleY(1); n.width(w); n.height(h); n.offset({ x: w / 2, y: h / 2 });
+    const w = Math.max(GRID, snap(n.width() * sx)), h = Math.max(GRID, snap(n.height() * sy));
+    n.scaleX(1); n.scaleY(1); c.w = w; c.h = h;
+    n.width(w); n.height(h); n.offset({ x: w / 2, y: h / 2 });
   } else {
-    const r = Math.max(GRID, n.radius() * n.scaleX());
-    n.scaleX(1); n.scaleY(1); n.radius(r);
+    const r = Math.max(GRID, snap(n.radius() * sx));
+    n.scaleX(1); n.scaleY(1); c.r = r; n.radius(r);
   }
+  c.rot = Math.round(n.rotation());
+  c.x = snapPos ? snap(n.x()) : n.x();
+  c.y = snapPos ? snap(n.y()) : n.y();
+  n.x(c.x); n.y(c.y);
 }
 function syncFromNode(c) {              // commit Konva node back to the model (snapped)
   const n = c.node;
@@ -179,17 +197,37 @@ function select(c) {
   // isolation only the clicked shape is selected (edit it individually).
   selGroup = editBusbar ? [c] : conductors.filter((k) => k.busbar === c.busbar);
   selGroup.forEach((m) => setHighlight(m, true));
-  if (selGroup.length === 1) {   // resize/rotate handles only for a single shape
-    tr.nodes([c.node]);
-    tr.keepRatio(c.type === "circle");
-    tr.enabledAnchors(c.type === "circle"
-      ? ["top-left", "top-right", "bottom-left", "bottom-right"] : undefined);
-  } else {
-    tr.nodes([]);   // multi-shape busbar: drag to move all; edit shapes via double-click
-  }
+  // one transformer over the whole selection: drag the rotate "hair" to spin the
+  // group, the corner/edge anchors to scale it (all about the group centre).
+  const hasCircle = selGroup.some((m) => m.type === "circle");
+  tr.nodes(selGroup.map((m) => m.node));
+  tr.keepRatio(hasCircle);   // keep circles round (and multi-shape aspect locked)
+  tr.enabledAnchors(hasCircle
+    ? ["top-left", "top-right", "bottom-left", "bottom-right"]
+    : ["top-left", "top-center", "top-right", "middle-left",
+       "middle-right", "bottom-left", "bottom-center", "bottom-right"]);
   $("propPanel").hidden = false;
   fillProps(c);
   layer.batchDraw();
+}
+
+// rotate the selected busbar (or shape) about its area-weighted centroid
+function rotateGroup(deg) {
+  if (!selGroup.length) return;
+  let sx = 0, sy = 0, sa = 0;
+  for (const m of selGroup) { const a = shapeAreaMM2(m) || 1; sx += a * m.x; sy += a * m.y; sa += a; }
+  const cx = sx / sa, cy = sy / sa, th = (deg * Math.PI) / 180, cs = Math.cos(th), sn = Math.sin(th);
+  for (const m of selGroup) {
+    const dx = m.x - cx, dy = m.y - cy;
+    m.x = cx + dx * cs - dy * sn;          // orbit each piece about the centroid
+    m.y = cy + dx * sn + dy * cs;
+    m.rot = (((m.rot + deg) % 360) + 540) % 360 - 180;   // and spin it, kept in [-180,180]
+    const n = m.node; n.x(m.x); n.y(m.y); n.rotation(m.rot);
+  }
+  if (tr.nodes().length) tr.forceUpdate();
+  if (selected) fillProps(selected);
+  layer.batchDraw();
+  updateAreas();
 }
 
 stage.on("click tap", (e) => { if (e.target === stage) select(null); });
@@ -302,10 +340,14 @@ $("copy").onclick = copySelection;
 $("paste").onclick = pasteClipboard;
 
 document.addEventListener("keydown", (e) => {
+  const typing = /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName);
   if (e.key === "Delete" && selected) $("del").onclick();
   if (e.key === "Escape") { exitIsolation(); select(null); }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") { copySelection(); e.preventDefault(); }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v") { pasteClipboard(); e.preventDefault(); }
+  if (!typing && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === "r" && selGroup.length) {
+    rotateGroup(e.shiftKey ? -15 : 15); e.preventDefault();   // quick 15° nudge
+  }
 });
 
 // ---- field view (large overlay) ------------------------------------------
