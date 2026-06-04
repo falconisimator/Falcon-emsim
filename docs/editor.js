@@ -296,8 +296,8 @@ function fillResults(data) {
   }
   const head =
     `<b>Total loss: ${data.total_loss.toPrecision(4)} W/m</b><br>` +
-    `${data.loss_per_density.toPrecision(3)} W/m per A/mm² ` +
-    `(at ${data.applied_density.toPrecision(3)} A/mm² applied)<br>`;
+    `${data.loss_coeff.toPrecision(3)} W/m per (A/mm²)² ` +
+    `(current-independent; ${data.applied_density.toPrecision(3)} A/mm² applied)<br>`;
   $("summary").innerHTML = head + data.terminals.map((t) =>
     `Term ${t.name}: V̇/L=${t.vgrad.toPrecision(3)} V/m, Z=${t.z_re.toExponential(2)}${t.z_im >= 0 ? "+" : ""}${t.z_im.toExponential(2)}j Ω/m`).join("<br>");
 }
