@@ -9,7 +9,10 @@ const MAT = {
   Aluminium: { name: "aluminium", sigma: 3.5e7, mu_r: 1.0 },
   Steel: { name: "steel", sigma: 1.0e7, mu_r: 200.0 },
 };
-const snap = (v) => Math.round(v / GRID) * GRID;
+const ROT_SNAPS = [0, 15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180,
+                   -15, -30, -45, -60, -75, -90, -105, -120, -135, -150, -165];
+let snapOn = true;                                       // grid + angle snap for individual edits
+const snap = (v) => (snapOn ? Math.round(v / GRID) * GRID : v);
 
 let conductors = [];    // model: list of {id,name,type,w,h,r,x,y,rot,group,material,busbar,node}
 let selected = null;     // representative conductor (drives the property panel)
@@ -24,7 +27,7 @@ const stage = new Konva.Stage({ container: "editor", width: editorDiv.clientWidt
 const gridLayer = new Konva.Layer({ listening: false });
 const layer = new Konva.Layer();
 stage.add(gridLayer); stage.add(layer);
-const tr = new Konva.Transformer({ rotationSnaps: [0, 15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180, -15, -30, -45, -60, -75, -90, -105, -120, -135, -150, -165], rotateAnchorOffset: 24 });
+const tr = new Konva.Transformer({ rotationSnaps: ROT_SNAPS, rotateAnchorOffset: 24 });
 layer.add(tr);
 
 function recenter() {
@@ -66,19 +69,20 @@ function makeNode(c) {
       : null;
   });
   node.on("dragmove", () => {
-    if (dragStart) {   // move the whole busbar together
+    if (dragStart) {   // move the whole busbar together — rigid, never snapped
       const dx = node.x() - dragStart.rx, dy = node.y() - dragStart.ry;
       for (const it of dragStart.members) {
         if (it.m === c) continue;
-        it.m.node.x(snap(it.x + dx)); it.m.node.y(snap(it.y + dy));
+        it.m.node.x(it.x + dx); it.m.node.y(it.y + dy);
       }
       tr.forceUpdate();   // keep the selection box on the moving group
+    } else {             // single shape — snap to grid (when enabled)
+      node.x(snap(node.x())); node.y(snap(node.y()));
     }
-    node.x(snap(node.x())); node.y(snap(node.y()));
   });
   node.on("dragend", () => {
-    if (dragStart) { dragStart.members.forEach((it) => syncFromNode(it.m)); dragStart = null; }
-    else syncFromNode(c);
+    if (dragStart) { dragStart.members.forEach((it) => syncFromNode(it.m, false)); dragStart = null; }
+    else syncFromNode(c, true);
     if (selected === c) fillProps(c);
     tr.forceUpdate(); updateAreas();
   });
@@ -96,33 +100,32 @@ function makeNode(c) {
   return node;
 }
 // commit a node's transform (scale folded into size, rotation, position) into
-// the model. snapPos: snap the centre to the grid (single-shape edits only —
-// for a rotated/scaled group, snapping each piece would distort the rigid shape).
-function bakeNode(c, snapPos) {
-  const n = c.node;
+// the model. doSnap: snap size+centre to the grid — true only for single-shape
+// edits; a rotated/scaled group is committed exactly so it stays rigid.
+function bakeNode(c, doSnap) {
+  const n = c.node, sp = (v) => (doSnap ? snap(v) : v);
   const sx = Math.abs(n.scaleX()), sy = Math.abs(n.scaleY());
   if (c.type === "rect") {
-    const w = Math.max(GRID, snap(n.width() * sx)), h = Math.max(GRID, snap(n.height() * sy));
+    const w = Math.max(GRID, sp(n.width() * sx)), h = Math.max(GRID, sp(n.height() * sy));
     n.scaleX(1); n.scaleY(1); c.w = w; c.h = h;
     n.width(w); n.height(h); n.offset({ x: w / 2, y: h / 2 });
   } else {
-    const r = Math.max(GRID, snap(n.radius() * sx));
+    const r = Math.max(GRID, sp(n.radius() * sx));
     n.scaleX(1); n.scaleY(1); c.r = r; n.radius(r);
   }
   c.rot = Math.round(n.rotation());
-  c.x = snapPos ? snap(n.x()) : n.x();
-  c.y = snapPos ? snap(n.y()) : n.y();
+  c.x = sp(n.x()); c.y = sp(n.y());
   n.x(c.x); n.y(c.y);
 }
-function syncFromNode(c) {              // commit Konva node back to the model (snapped)
-  const n = c.node;
-  c.x = snap(n.x()); c.y = snap(n.y()); c.rot = Math.round(n.rotation());
+function syncFromNode(c, doSnap = true) {   // commit Konva node back to the model
+  const n = c.node, sp = (v) => (doSnap ? snap(v) : v);
+  c.x = sp(n.x()); c.y = sp(n.y()); c.rot = Math.round(n.rotation());
   n.x(c.x); n.y(c.y);
   if (c.type === "rect") {
-    c.w = snap(n.width()); c.h = snap(n.height());
+    c.w = sp(n.width()); c.h = sp(n.height());
     n.width(c.w); n.height(c.h); n.offset({ x: c.w / 2, y: c.h / 2 });
   } else {
-    c.r = snap(n.radius()); n.radius(c.r);
+    c.r = sp(n.radius()); n.radius(c.r);
   }
   layer.batchDraw();
 }
@@ -201,6 +204,9 @@ function select(c) {
   // group, the corner/edge anchors to scale it (all about the group centre).
   const hasCircle = selGroup.some((m) => m.type === "circle");
   tr.nodes(selGroup.map((m) => m.node));
+  // 15° angle snap only when manipulating a single shape with snap enabled;
+  // a group rotates freely so you can dial in any angle.
+  tr.rotationSnaps(snapOn && selGroup.length === 1 ? ROT_SNAPS : []);
   tr.keepRatio(hasCircle);   // keep circles round (and multi-shape aspect locked)
   tr.enabledAnchors(hasCircle
     ? ["top-left", "top-right", "bottom-left", "bottom-right"]
@@ -242,7 +248,10 @@ function fillProps(c) {
   $("pHlabel").parentElement.style.display = c.type === "rect" ? "" : "none";
   $("pX").value = c.x; $("pY").value = c.y; $("pRot").value = c.rot;
   $("pPhase").value = c.group; $("pMat").value = c.material;
-  for (const id of ["pW", "pH", "pX", "pY", "pRot"]) $(id).disabled = !single;
+  // size/position are per-shape (edit a group's pieces via isolation); rotation
+  // works on a group too — it spins the whole busbar to the typed angle.
+  for (const id of ["pW", "pH", "pX", "pY"]) $(id).disabled = !single;
+  $("pRot").disabled = false;
 }
 function readProps() {
   const c = selected; if (!c) return;
@@ -255,6 +264,9 @@ function readProps() {
     n.x(c.x); n.y(c.y); n.rotation(c.rot);
     if (c.type === "rect") { n.width(c.w); n.height(c.h); n.offset({ x: c.w / 2, y: c.h / 2 }); }
     else n.radius(c.r);
+  } else {        // group: rotate the whole busbar to the typed angle (about its centroid)
+    const delta = (+$("pRot").value) - c.rot;
+    if (delta) rotateGroup(delta);
   }
   // phase + material apply to the whole busbar
   const phase = $("pPhase").value, material = $("pMat").value;
@@ -267,6 +279,11 @@ function readProps() {
 }
 ["pW", "pH", "pX", "pY", "pRot", "pPhase", "pMat"].forEach((id) =>
   $(id).addEventListener("input", readProps));
+
+$("snapToggle").addEventListener("change", (e) => {
+  snapOn = e.target.checked;
+  if (selected) select(selected);   // re-apply the angle-snap configuration
+});
 
 // ---- scene serialisation (io format, metres) ------------------------------
 function toSceneDict() {
