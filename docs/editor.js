@@ -370,7 +370,7 @@ document.addEventListener("keydown", (e) => {
 // ---- field view (large overlay) ------------------------------------------
 function showFieldView() {
   document.getElementById("fieldOverlay").style.display = "flex";
-  requestAnimationFrame(() => { EM.stop(); EM.drawFrame(0); });
+  requestAnimationFrame(() => renderField());
 }
 function hideFieldView() {
   EM.stop();
@@ -431,10 +431,21 @@ function updateInfo() {
   if (!el.hidden) el.textContent = (EM.DESCRIPTIONS && EM.DESCRIPTIONS[$("field").value]) || "";
 }
 $("info").onclick = () => { const el = $("fieldInfo"); el.hidden = !el.hidden; updateInfo(); };
-$("field").onchange = () => { updateInfo(); if (EM._data) { EM.stop(); EM.drawFrame(0); } };
-$("play").onclick = () => EM.play();
-$("staticBtn").onclick = () => { EM.stop(); EM.drawFrame(0); };
-$("sumPeriod").onclick = () => EM.sumOverPeriod();
+// render the selected field: the "util" entry runs the period-sum buildup,
+// everything else draws a single (static) frame.
+function renderField() {
+  if (!EM._data) return;
+  EM.stop();
+  if ($("field").value === "util") EM.sumOverPeriod();
+  else EM.drawFrame(0);
+}
+$("field").onchange = () => { updateInfo(); renderField(); };
+$("play").onclick = () => { if ($("field").value === "util") EM.sumOverPeriod(); else EM.play(); };
+$("staticBtn").onclick = () => {
+  EM.stop();
+  if ($("field").value === "util" && !EM._util) EM.sumOverPeriod();  // need the map first
+  else EM.drawFrame(0);
+};
 
 // ---- default scene + boot --------------------------------------------------
 function defaultScene() {

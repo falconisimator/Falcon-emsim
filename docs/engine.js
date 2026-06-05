@@ -51,6 +51,7 @@ EM.solve = function (sceneDict) {
   data.javg_im = Float64Array.from(data.javg_im);
   EM._data = data;
   EM._edges = computeEdges(data);  // material/conductor interface edges
+  EM._util = null;                 // invalidate any cached period-sum map
   return data;
 };
 
@@ -127,8 +128,12 @@ EM.DESCRIPTIONS = {
   Jn: "Current density relative to the terminal's average AT THIS INSTANT: J_z(t) / (i(t)/A). " +
       "Animate it. White = 1 (equal to the instantaneous average), red >1 = above, blue <1 = below. " +
       "Because eddy currents lag, the pattern shifts through the cycle (near the current zero-crossing " +
-      "the average ~ 0, so it briefly saturates). Click 'Σ over period' to sum it into the steady " +
-      "under/over-utilization map (RMS |J| / (I/A)). Air is white.",
+      "the average ~ 0, so it briefly saturates). For the steady picture select 'J / avg over period'. " +
+      "Air is white.",
+  util: "Period-summed utilization: RMS |J| over one cycle / (I/A) = the steady under/over-utilization " +
+      "map. Selecting it sums the instantaneous current over a full period (you'll see it build up, then " +
+      "settle). White = 1 (carrying its fair share), red >1 = over-utilized, blue <1 = under-utilized / " +
+      "'slow' copper. Air is white. Re-select or Animate to recompute.",
 };
 
 function drawColorbar(ctx, W, H, kind, scale) {
@@ -169,7 +174,11 @@ function fieldScale(d, kind) {
 EM.drawFrame = function (phi, accUtil) {
   const d = EM._data;
   if (!d) return;
-  const kind = accUtil ? "Jn" : document.getElementById("field").value;
+  // "util" dropdown entry = the steady period-sum utilization map (computed by
+  // sumOverPeriod and cached in EM._util); render it via the accUtil path.
+  const sel = document.getElementById("field").value;
+  if (!accUtil && sel === "util" && EM._util && EM._util.length === d.tris.length / 3) accUtil = EM._util;
+  const kind = accUtil ? "Jn" : sel;
   const cv = document.getElementById("fieldCanvas");
   const W = (cv.width = cv.clientWidth), H = (cv.height = cv.clientHeight);
   const ctx = cv.getContext("2d");
@@ -389,7 +398,7 @@ EM.sumOverPeriod = function (frames = 90) {
     EM.drawFrame(0, util);
     k++;
     if (k <= frames) EM._anim = requestAnimationFrame(step);
-    else EM._anim = null;
+    else { EM._anim = null; EM._util = util; }   // cache the steady map for static redraws
   };
   EM._anim = requestAnimationFrame(step);
 };
