@@ -75,6 +75,9 @@
           <input id="speed" type="range" min="1500" max="10000" value="5000" step="500" style="width:120px" />
         </div>
         <canvas id="fieldCanvas"></canvas>
+        <div id="hoverReadout" style="position:absolute;pointer-events:none;display:none;z-index:5;
+             background:rgba(20,22,26,.92);color:#fff;padding:3px 7px;border-radius:4px;font-size:12px;
+             font-variant-numeric:tabular-nums;white-space:nowrap;box-shadow:0 1px 4px #0006"></div>
         <div id="fieldInfo" hidden style="position:absolute;left:14px;bottom:14px;max-width:520px;
              background:rgba(20,22,26,.92);color:#eee;padding:10px 12px;border-radius:6px;
              font-size:12px;line-height:1.45;box-shadow:0 2px 10px #0006"></div>
@@ -124,7 +127,7 @@
 
   <script src="https://unpkg.com/konva@9/konva.min.js"></script>
   <script src="https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js"></script>
-  <script src="engine.js?v=19"></script>
-  <script src="editor.js?v=19"></script>
+  <script src="engine.js?v=20"></script>
+  <script src="editor.js?v=20"></script>
 </body>
 </html>

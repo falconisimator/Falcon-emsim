@@ -280,7 +280,80 @@ EM.drawFrame = function (phi, accUtil) {
   ctx.stroke();
 
   drawColorbar(ctx, W, H, kind, scale);
+
+  // keep the rendered field around so the hover readout can sample it (and stay
+  // live during animation); nv/valid are exactly what was drawn this frame.
+  EM._nv = nv; EM._valid = valid; EM._lastKind = kind; EM._isUtil = !!accUtil;
+  updateHoverReadout();
 };
+
+// ---- hover value readout -------------------------------------------------
+const fmtVal = (v) => {
+  const a = Math.abs(v);
+  if (a === 0) return "0";
+  if (a >= 1000 || a < 0.01) return v.toExponential(2);
+  return v.toFixed(a >= 100 ? 0 : a >= 1 ? 2 : 3);
+};
+function readoutText(kind, val, air, isUtil) {
+  if (kind === "J") return air ? "Jz = 0 (air)" : `Jz = ${fmtVal(val * 1e-6)} A/mm²`;
+  if (kind === "B") return `|B| = ${fmtVal(val)} T`;
+  if (kind === "A") return `Az = ${fmtVal(val)} Wb/m`;
+  if (kind === "Jn") return air ? "air" : `${isUtil ? "util" : "J/avg"} = ${fmtVal(val)}×`;
+  return "";
+}
+// element containing world point (px,py) + its barycentric weights, or null.
+function triAt(d, px, py) {
+  const n = d.tris, nodes = d.nodes, NE = n.length / 3, eps = 1e-7;
+  for (let t = 0; t < NE; t++) {
+    const i0 = n[t * 3], i1 = n[t * 3 + 1], i2 = n[t * 3 + 2];
+    const ax = nodes[i0 * 2], ay = nodes[i0 * 2 + 1], bx = nodes[i1 * 2], by = nodes[i1 * 2 + 1];
+    const cx = nodes[i2 * 2], cy = nodes[i2 * 2 + 1];
+    const det = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+    if (Math.abs(det) < 1e-30) continue;
+    const w0 = ((by - cy) * (px - cx) + (cx - bx) * (py - cy)) / det;
+    const w1 = ((cy - ay) * (px - cx) + (ax - cx) * (py - cy)) / det;
+    const w2 = 1 - w0 - w1;
+    if (w0 >= -eps && w1 >= -eps && w2 >= -eps) return { t, w0, w1, w2 };
+  }
+  return null;
+}
+// value at canvas pixel (px,py) for the field as currently drawn.
+EM.valueAt = function (px, py) {
+  const d = EM._data, nv = EM._nv, valid = EM._valid;
+  if (!d || !nv) return null;
+  const cv = document.getElementById("fieldCanvas");
+  const W = cv.width, H = cv.height, ext = d.extent, sc = 0.92 * Math.min(W, H) / (2 * ext);
+  const xm = (px - W / 2) / sc, ym = (py - H / 2) / sc;
+  const hit = triAt(d, xm, ym);
+  if (!hit) return null;
+  if (!valid[hit.t]) return { text: readoutText(EM._lastKind, 0, true, EM._isUtil) };
+  const n = d.tris, i0 = n[hit.t * 3], i1 = n[hit.t * 3 + 1], i2 = n[hit.t * 3 + 2];
+  const val = hit.w0 * nv[i0] + hit.w1 * nv[i1] + hit.w2 * nv[i2];
+  return { text: readoutText(EM._lastKind, val, false, EM._isUtil) };
+};
+function updateHoverReadout() {
+  const el = document.getElementById("hoverReadout"), h = EM._hover;
+  if (!el) return;
+  if (!h || !h.active || !EM._data) { el.style.display = "none"; return; }
+  const r = EM.valueAt(h.px, h.py);
+  if (!r) { el.style.display = "none"; return; }
+  el.textContent = r.text;
+  el.style.left = h.ox + "px"; el.style.top = h.oy + "px"; el.style.display = "block";
+}
+(function bindHoverReadout() {
+  const cv = document.getElementById("fieldCanvas"), overlay = document.getElementById("fieldOverlay");
+  if (!cv || !overlay) return;
+  EM._hover = { active: false, px: 0, py: 0, ox: 0, oy: 0 };
+  cv.addEventListener("mousemove", (e) => {
+    const r = cv.getBoundingClientRect(), o = overlay.getBoundingClientRect();
+    EM._hover.px = (e.clientX - r.left) * (cv.width / r.width);
+    EM._hover.py = (e.clientY - r.top) * (cv.height / r.height);
+    EM._hover.ox = e.clientX - o.left + 14; EM._hover.oy = e.clientY - o.top + 14;
+    EM._hover.active = true;
+    updateHoverReadout();
+  });
+  cv.addEventListener("mouseleave", () => { EM._hover.active = false; updateHoverReadout(); });
+})();
 
 EM.play = function () {
   EM.stop();
