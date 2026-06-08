@@ -49,6 +49,7 @@ EM.solve = function (sceneDict) {
   data.a_im = Float64Array.from(data.a_im);
   data.javg_re = Float64Array.from(data.javg_re);  // complex terminal avg density I/A
   data.javg_im = Float64Array.from(data.javg_im);
+  data.loss_density = Float64Array.from(data.loss_density);  // per-element W/m^3 (time-avg)
   EM._data = data;
   EM._edges = computeEdges(data);  // material/conductor interface edges
   EM._util = null;                 // invalidate any cached period-sum map
@@ -112,7 +113,7 @@ function fillGouraud(ctx, x0, y0, x1, y1, x2, y2, v0, v1, v2, colorOf) {
 // [unit, diverging?, display-scale factor]
 const FIELD_META = {
   J: ["A/mm²", true, 1e-6], B: ["T", false, 1], A: ["Wb/m", true, 1],
-  Jn: ["x avg", true, 1],
+  Jn: ["x avg", true, 1], P: ["W/m³", false, 1],
 };
 
 EM.DESCRIPTIONS = {
@@ -134,6 +135,10 @@ EM.DESCRIPTIONS = {
       "map. Selecting it sums the instantaneous current over a full period (you'll see it build up, then " +
       "settle). White = 1 (carrying its fair share), red >1 = over-utilized, blue <1 = under-utilized / " +
       "'slow' copper. Air is white. Re-select or Animate to recompute.",
+  P: "Ohmic loss density p = ½|J|²/σ [W/m³], time-averaged over the cycle - where the busbar heats up. " +
+     "The terminal voltage gradient V̇/L is uniform per phase, but skin & proximity effect crowd J (and " +
+     "loss ~ J²) onto surfaces and facing edges, so the loss density is far from uniform. Integrated over " +
+     "the cross-section it gives the total loss in W/m. Air carries no current and is white.",
 };
 
 function drawColorbar(ctx, W, H, kind, scale) {
@@ -166,6 +171,7 @@ function fieldScale(d, kind) {
   const n = d.J_re.length;
   if (kind === "J") for (let e = 0; e < n; e++) m = Math.max(m, Math.hypot(d.J_re[e], d.J_im[e]));
   else if (kind === "A") for (let e = 0; e < n; e++) m = Math.max(m, Math.hypot(d.Az_re[e], d.Az_im[e]));
+  else if (kind === "P") for (let e = 0; e < d.loss_density.length; e++) m = Math.max(m, d.loss_density[e]);
   else for (let e = 0; e < n; e++)
     m = Math.max(m, Math.hypot(d.Bx_re[e], d.Bx_im[e]) + Math.hypot(d.By_re[e], d.By_im[e]));
   return m;
@@ -217,6 +223,9 @@ EM.drawFrame = function (phi, accUtil) {
   } else if (kind === "A") {
     for (let t = 0; t < NE; t++) { ev[t] = d.Az_re[t] * c - d.Az_im[t] * s; valid[t] = 1; }
     colorOf = (v) => diverging(v / scale);
+  } else if (kind === "P") {   // ohmic loss density (time-averaged, phase-independent)
+    for (let t = 0; t < NE; t++) { ev[t] = d.loss_density[t]; valid[t] = d.region[t] >= 10 ? 1 : 0; }
+    colorOf = (v) => inferno(v / scale);
   } else {  // |B|
     for (let t = 0; t < NE; t++) {
       const bx = d.Bx_re[t] * c - d.Bx_im[t] * s, by = d.By_re[t] * c - d.By_im[t] * s;
@@ -307,6 +316,7 @@ function readoutText(kind, val, air, isUtil) {
   if (kind === "J") return air ? "Jz = 0 (air)" : `Jz = ${fmtVal(val * 1e-6)} A/mm²`;
   if (kind === "B") return `|B| = ${fmtVal(val)} T`;
   if (kind === "A") return `Az = ${fmtVal(val)} Wb/m`;
+  if (kind === "P") return air ? "p = 0 (air)" : `p = ${fmtVal(val)} W/m³`;
   if (kind === "Jn") return air ? "air" : `${isUtil ? "util" : "J/avg"} = ${fmtVal(val)}×`;
   return "";
 }

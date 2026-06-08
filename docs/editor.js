@@ -285,12 +285,17 @@ $("snapToggle").addEventListener("change", (e) => {
   if (selected) select(selected);   // re-apply the angle-snap configuration
 });
 
+$("meshScale").addEventListener("input", (e) => {
+  $("meshScaleVal").textContent = (+e.target.value).toFixed(1) + "×";
+});
+
 // ---- scene serialisation (io format, metres) ------------------------------
 function toSceneDict() {
   return {
     format: 1, frequency: +$("freq").value, three_phase: $("threephase").checked,
     line_current: +$("current").value, boundary: "dirichlet", order: 1,
     domain_radius: 0, lc_surface: 0, lc_far: 0, group_currents: {},
+    mesh_scale: +$("meshScale").value,
     conductors: conductors.map((c) => ({
       name: c.name,
       shape: c.type === "rect"

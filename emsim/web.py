@@ -34,9 +34,13 @@ def solve_scene(scene_dict) -> str:
     ext0 = max(abs(c.placement.x) + abs(c.placement.y) + c.shape.bounding_radius()
                for c in sc.conductors)
     min_char = min(c.shape.char_size() for c in sc.conductors)
+    # mesh_scale (from the UI slider): >1 = finer, <1 = coarser. Clamped so the
+    # in-browser solve stays tractable.
+    ms = float(scene_dict.get("mesh_scale", 1.0) or 1.0)
+    ms = min(2.0, max(0.6, ms))
     sc.domain_radius = 2.3 * ext0
-    sc.lc_surface = min_char / 8.0
-    sc.lc_far = 0.18 * ext0
+    sc.lc_surface = (min_char / 8.0) / ms
+    sc.lc_far = (0.18 * ext0) / ms
 
     sol = sc.solve()
     res = sc.analyse(sol)
@@ -54,6 +58,14 @@ def solve_scene(scene_dict) -> str:
     from collections import defaultdict
 
     reg, areas = mesh.region_tag, mesh.areas()
+    # per-element time-averaged ohmic loss density p = 1/2 |J|^2 / sigma [W/m^3].
+    # The terminal voltage gradient V/L is uniform per phase, but J (hence the
+    # local heating) varies across the section -- this is that "loss gradient".
+    sigma_el = np.zeros(reg.shape[0])
+    for c in sc.conductors:
+        sigma_el[reg == c.region_tag] = c.material.sigma
+    sig = sigma_el[phys]
+    ploss = np.where(sig > 0, 0.5 * np.abs(J) ** 2 / sig, 0.0)
     g_area = defaultdict(float)
     for c in sc.conductors:
         if c.group is not None:
@@ -84,6 +96,7 @@ def solve_scene(scene_dict) -> str:
         "J_re": J.real.tolist(), "J_im": J.imag.tolist(),
         "Az_re": Az.real.tolist(), "Az_im": Az.imag.tolist(),
         "javg_re": javg[phys].real.tolist(), "javg_im": javg[phys].imag.tolist(),
+        "loss_density": ploss.tolist(),     # per element, W/m^3 (time-averaged ohmic)
         "extent": float(ext),
         "num_nodes": int(mesh.num_nodes),
         "total_loss": float(res.total_loss),
