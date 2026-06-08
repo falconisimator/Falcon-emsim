@@ -30,26 +30,48 @@ stage.add(gridLayer); stage.add(layer);
 const tr = new Konva.Transformer({ rotationSnaps: ROT_SNAPS, rotateAnchorOffset: 24 });
 layer.add(tr);
 
+const MIN_SCALE = PPM / 4, MAX_SCALE = PPM * 12;   // scroll-zoom limits
 function recenter() {
   stage.width(editorDiv.clientWidth); stage.height(editorDiv.clientHeight);
   stage.scale({ x: PPM, y: PPM });
   stage.position({ x: stage.width() / 2, y: stage.height() / 2 });
   drawGrid();
 }
+// grid covering the current viewport (in world mm), with constant on-screen line
+// width and a step that coarsens when zoomed far out so the line count stays bounded.
 function drawGrid() {
   gridLayer.destroyChildren();
-  const wmm = stage.width() / PPM, hmm = stage.height() / PPM;
-  const ext = Math.max(wmm, hmm);
-  for (let x = -snap(ext); x <= ext; x += GRID) {
-    gridLayer.add(new Konva.Line({ points: [x, -ext, x, ext],
-      stroke: x === 0 ? "#9aa0a6" : "#e3e6ea", strokeWidth: (x % 25 === 0 ? 0.4 : 0.2) / PPM }));
-  }
-  for (let y = -snap(ext); y <= ext; y += GRID) {
-    gridLayer.add(new Konva.Line({ points: [-ext, y, ext, y],
-      stroke: y === 0 ? "#9aa0a6" : "#e3e6ea", strokeWidth: (y % 25 === 0 ? 0.4 : 0.2) / PPM }));
-  }
+  const s = stage.scaleX();
+  const tlx = -stage.x() / s, tly = -stage.y() / s;
+  const brx = (stage.width() - stage.x()) / s, bry = (stage.height() - stage.y()) / s;
+  const mx = (brx - tlx) * 0.5, my = (bry - tly) * 0.5;   // margin so small pans stay covered
+  let step = GRID;
+  while ((brx - tlx + 2 * mx) / step > 300) step *= 2;
+  const x0 = Math.floor((tlx - mx) / step) * step, x1 = Math.ceil((brx + mx) / step) * step;
+  const y0 = Math.floor((tly - my) / step) * step, y1 = Math.ceil((bry + my) / step) * step;
+  for (let x = x0; x <= x1; x += step)
+    gridLayer.add(new Konva.Line({ points: [x, y0, x, y1],
+      stroke: x === 0 ? "#9aa0a6" : "#e3e6ea", strokeWidth: (x % 25 === 0 ? 0.4 : 0.2) / s }));
+  for (let y = y0; y <= y1; y += step)
+    gridLayer.add(new Konva.Line({ points: [x0, y, x1, y],
+      stroke: y === 0 ? "#9aa0a6" : "#e3e6ea", strokeWidth: (y % 25 === 0 ? 0.4 : 0.2) / s }));
   gridLayer.batchDraw();
 }
+// scroll wheel = zoom toward the cursor
+stage.on("wheel", (e) => {
+  e.evt.preventDefault();
+  const oldScale = stage.scaleX(), pointer = stage.getPointerPosition();
+  if (!pointer) return;
+  const wx = (pointer.x - stage.x()) / oldScale, wy = (pointer.y - stage.y()) / oldScale;
+  let s = e.evt.deltaY > 0 ? oldScale / 1.12 : oldScale * 1.12;
+  s = Math.max(MIN_SCALE, Math.min(MAX_SCALE, s));
+  stage.scale({ x: s, y: s });
+  stage.position({ x: pointer.x - wx * s, y: pointer.y - wy * s });
+  drawGrid();
+});
+// drag empty canvas = pan (shapes/handles still drag themselves)
+stage.draggable(true);
+stage.on("dragmove dragend", (e) => { if (e.target === stage) drawGrid(); });
 
 // ---- model <-> Konva ------------------------------------------------------
 function makeNode(c) {
