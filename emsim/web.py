@@ -47,7 +47,8 @@ def solve_scene(scene_dict) -> str:
     mesh = sol.mesh
     phys = mesh.region_tag != KELVIN_TAG
     B = element_B(sol)[phys]
-    J = element_Jz(sol)[phys]
+    J_all = element_Jz(sol)
+    J = J_all[phys]
     # per-element A_z (centroid) for the vector-potential view
     from emsim.fem import shapes
     n_c = shapes.shape_values(mesh.order, np.array([[1 / 3, 1 / 3, 1 / 3]]))[0]
@@ -75,6 +76,18 @@ def solve_scene(scene_dict) -> str:
         if c.group is not None and g_area[c.group] > 0:
             javg[reg == c.region_tag] = sc.current_for_group(c.group) / g_area[c.group]
 
+    # effective cross-section per phase: conductor area carrying >= 90% of its
+    # phase's average current density (|J| >= 0.9 |I/A|). A small fraction means
+    # the current is crowded into part of the bar (high R_AC / wasted copper).
+    jmag, javg_mag = np.abs(J_all), np.abs(javg)
+    util = np.zeros(reg.shape[0])
+    nz = javg_mag > 0
+    util[nz] = jmag[nz] / javg_mag[nz]
+    g_area90 = defaultdict(float)
+    for c in sc.conductors:
+        if c.group is not None:
+            g_area90[c.group] += areas[(reg == c.region_tag) & (util >= 0.9)].sum()
+
     # applied current density of the whole system = total terminal current / total
     # conductor area, and the total loss normalized to it (W/m per A/mm^2).
     total_area = sum(g_area.values())  # m^2
@@ -97,6 +110,8 @@ def solve_scene(scene_dict) -> str:
         "Az_re": Az.real.tolist(), "Az_im": Az.imag.tolist(),
         "javg_re": javg[phys].real.tolist(), "javg_im": javg[phys].imag.tolist(),
         "loss_density": ploss.tolist(),     # per element, W/m^3 (time-averaged ohmic)
+        "area_group": {g: float(g_area[g] * 1e6) for g in g_area},      # mm^2 per phase
+        "eff_area_90": {g: float(g_area90[g] * 1e6) for g in g_area},   # mm^2 with |J|>=0.9 avg
         "extent": float(ext),
         "num_nodes": int(mesh.num_nodes),
         "total_loss": float(res.total_loss),

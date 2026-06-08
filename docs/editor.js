@@ -422,11 +422,18 @@ function fillResults(data) {
     tr2.innerHTML = `<td>${c.group}</td><td>${c.I.toFixed(0)}</td><td>${share}</td><td>${c.loss.toPrecision(3)}</td>`;
     tb.appendChild(tr2);
   }
+  const ag = data.area_group || {}, eff = data.eff_area_90 || {};
+  const effLine = Object.keys(ag).sort().map((g) => {
+    const a = ag[g], e = eff[g] || 0, pct = a > 0 ? (100 * e / a).toFixed(0) : "0";
+    return `${g} ${e.toFixed(0)}/${a.toFixed(0)} (${pct}%)`;
+  }).join(" &nbsp; ");
   const head =
     `<b>Total loss: ${data.total_loss.toPrecision(4)} W/m</b><br>` +
     `${data.loss_per_density.toPrecision(3)} W/m per A/mm²` +
     ` &nbsp;|&nbsp; ${data.loss_coeff.toPrecision(3)} W/m per (A/mm²)² (current-indep.)<br>` +
-    `(applied ${data.applied_density.toPrecision(3)} A/mm²)<br>`;
+    `(applied ${data.applied_density.toPrecision(3)} A/mm²)<br>` +
+    `<span title="Conductor area carrying ≥90% of the phase average |J|. Low % = current crowded into part of the bar.">` +
+    `Effective area ≥90% util (mm²): ${effLine}</span><br>`;
   $("summary").innerHTML = head + data.terminals.map((t) =>
     `Term ${t.name}: V̇/L=${t.vgrad.toPrecision(3)} V/m, Z=${t.z_re.toExponential(2)}${t.z_im >= 0 ? "+" : ""}${t.z_im.toExponential(2)}j Ω/m`).join("<br>");
 }
