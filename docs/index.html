@@ -28,6 +28,11 @@
     th, td { border: 1px solid var(--bd); padding: 3px 5px; text-align: right; }
     th:first-child, td:first-child { text-align: left; }
     #status { padding: 5px 10px; border-top: 1px solid var(--bd); font-size: 12px; color: #888; }
+    #progress { height: 3px; background: #8882; overflow: hidden; }
+    #progress[hidden] { display: none; }
+    #progressBar { position: relative; height: 100%; width: 35%; background: #1f6feb; border-radius: 2px;
+      animation: emslide 1.05s ease-in-out infinite; }
+    @keyframes emslide { 0% { left: -35%; } 100% { left: 100%; } }
     #propPanel[hidden], #resultsBox[hidden] { display: none; }
     .muted { font-size: 11px; color: #999; }
     #isoBadge { font-size: 12px; color: #1f6feb; font-weight: 600; }
@@ -128,10 +133,10 @@
     </div>
   </div>
   <div id="status">Booting Python (Pyodide + WebAssembly)…</div>
+  <div id="progress"><div id="progressBar"></div></div>
 
   <script src="https://unpkg.com/konva@9/konva.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js"></script>
-  <script src="engine.js?v=24"></script>
-  <script src="editor.js?v=24"></script>
+  <script src="engine.js?v=25"></script>
+  <script src="editor.js?v=25"></script>
 </body>
 </html>

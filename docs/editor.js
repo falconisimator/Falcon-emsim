@@ -416,24 +416,24 @@ $("loadFile").onchange = (e) => {
   const r = new FileReader(); r.onload = () => loadSceneDict(JSON.parse(r.result)); r.readAsText(f);
 };
 
-$("solve").onclick = () => {
+// progress bar shown while booting and while a (background) solve runs
+EM._onProgress = (text) => { $("status").textContent = text; };
+$("solve").onclick = async () => {
   if (!EM.ready || !conductors.length) return;
   $("status").textContent = "Meshing + solving (in-browser)…";
-  $("solve").disabled = true;
-  setTimeout(() => {
-    try {
-      const t0 = performance.now();
-      const data = EM.solve(toSceneDict());
-      const ms = (performance.now() - t0).toFixed(0);
-      $("resultsBox").hidden = false;
-      fillResults(data);
-      showFieldView();   // switch the big canvas area to the field result
-      $("status").textContent = `Solved in ${ms} ms (${data.num_nodes} nodes). Total loss ${data.total_loss.toPrecision(4)} W/m.`;
-    } catch (err) {
-      $("status").textContent = "Solve error: " + err; console.error(err);
-    }
-    $("solve").disabled = false;
-  }, 20);
+  $("progress").hidden = false;        // the editor stays interactive meanwhile
+  try {
+    const t0 = performance.now();
+    const data = await EM.solve(toSceneDict());   // runs in the worker, non-blocking
+    const ms = (performance.now() - t0).toFixed(0);
+    $("resultsBox").hidden = false;
+    fillResults(data);
+    showFieldView();   // switch the big canvas area to the field result
+    $("status").textContent = `Solved in ${ms} ms (${data.num_nodes} nodes). Total loss ${data.total_loss.toPrecision(4)} W/m.`;
+  } catch (err) {
+    $("status").textContent = "Solve error: " + err; console.error(err);
+  }
+  $("progress").hidden = true;
 };
 
 function fillResults(data) {
@@ -501,6 +501,7 @@ recenter();
 defaultScene();
 document.addEventListener("em-ready", () => {
   document.getElementById("solve").disabled = false;
+  document.getElementById("progress").hidden = true;   // boot finished
   document.getElementById("boot").textContent = "ready — edit, then click Solve";
   if (location.search.includes("autosolve")) {
     const m = location.search.match(/field=(\w+)/);

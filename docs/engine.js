@@ -6,54 +6,59 @@ const EM = (window.EM = {
   _solveFn: null,
   _data: null,
   _anim: null,
+  _view: { zoom: 1, ox: 0, oy: 0 },   // field-view pan/zoom (screen px offset + factor)
 });
 
 const statusEl = () => document.getElementById("status");
 
-async function boot() {
-  const pyodide = await loadPyodide();
-  statusEl().textContent = "Loading numpy / scipy…";
-  await pyodide.loadPackage(["numpy", "scipy", "micropip"]);
-  statusEl().textContent = "Installing emsim…";
-  const wheelUrl = new URL("wheels/emsim-0.1.0-py3-none-any.whl", location.href).href;
-  const micropip = pyodide.pyimport("micropip");
-  // Fetch the wheel with cache bypassed and install it from the Pyodide FS, so
-  // a redeploy always loads the latest build (the wheel filename is fixed, so a
-  // plain URL install would otherwise serve a browser-cached copy). Falls back
-  // to a direct URL install if the emfs path is unsupported.
-  let ok = false;
-  try {
-    const resp = await fetch(wheelUrl, { cache: "no-store" });
-    const bytes = new Uint8Array(await resp.arrayBuffer());
-    pyodide.FS.writeFile("/emsim-0.1.0-py3-none-any.whl", bytes);
-    await micropip.install("emfs:/emsim-0.1.0-py3-none-any.whl", false, false);
-    ok = true;
-  } catch (e) {
-    console.warn("fresh-wheel install failed; falling back to cached URL", e);
-  }
-  if (!ok) await micropip.install(wheelUrl, false, false); // deps=False
-  EM._solveFn = pyodide.runPython("from emsim.web import solve_scene\nsolve_scene");
-  EM.ready = true;
-  statusEl().textContent = "Ready.";
-  document.dispatchEvent(new Event("em-ready"));
-}
+// Pyodide runs in a Web Worker (worker.js) so a solve never blocks the main
+// thread -- the editor stays interactive and a progress bar can animate.
+const _worker = new Worker("worker.js?v=25");
+const _pending = new Map();
+let _solveSeq = 0;
+EM._onProgress = null;   // editor sets this to drive the progress bar / status
 
-// Solve a scene dict (built by the editor). Returns parsed result object.
+_worker.onmessage = (e) => {
+  const m = e.data;
+  if (m.type === "status") statusEl().textContent = m.text;
+  else if (m.type === "ready") {
+    EM.ready = true; statusEl().textContent = "Ready.";
+    document.dispatchEvent(new Event("em-ready"));
+  } else if (m.type === "progress") {
+    if (EM._onProgress) EM._onProgress(m.text);
+  } else if (m.type === "result") {
+    const p = _pending.get(m.id); if (p) { _pending.delete(m.id); p.resolve(m.json); }
+  } else if (m.type === "error") {
+    const p = _pending.get(m.id);
+    if (p) { _pending.delete(m.id); p.reject(new Error(m.text)); }
+    else statusEl().textContent = "Boot error: " + m.text;
+  }
+};
+_worker.onerror = (e) => { statusEl().textContent = "Worker error: " + (e.message || e); };
+
+// Solve a scene dict (built by the editor) in the worker. Returns a Promise of
+// the parsed result object (typed arrays for the hot paths).
 EM.solve = function (sceneDict) {
-  const json = EM._solveFn(JSON.stringify(sceneDict));
-  const data = JSON.parse(json);
-  data.nodes = Float64Array.from(data.nodes);
-  data.tris = Int32Array.from(data.tris);
-  data.region = Int32Array.from(data.region);
-  data.a_re = Float64Array.from(data.a_re);
-  data.a_im = Float64Array.from(data.a_im);
-  data.javg_re = Float64Array.from(data.javg_re);  // complex terminal avg density I/A
-  data.javg_im = Float64Array.from(data.javg_im);
-  data.loss_density = Float64Array.from(data.loss_density);  // per-element W/m^3 (time-avg)
-  EM._data = data;
-  EM._edges = computeEdges(data);  // material/conductor interface edges
-  EM._util = null;                 // invalidate any cached period-sum map
-  return data;
+  return new Promise((resolve, reject) => {
+    const id = ++_solveSeq;
+    _pending.set(id, { resolve, reject });
+    _worker.postMessage({ type: "solve", id, scene: sceneDict });
+  }).then((json) => {
+    const data = JSON.parse(json);
+    data.nodes = Float64Array.from(data.nodes);
+    data.tris = Int32Array.from(data.tris);
+    data.region = Int32Array.from(data.region);
+    data.a_re = Float64Array.from(data.a_re);
+    data.a_im = Float64Array.from(data.a_im);
+    data.javg_re = Float64Array.from(data.javg_re);  // complex terminal avg density I/A
+    data.javg_im = Float64Array.from(data.javg_im);
+    data.loss_density = Float64Array.from(data.loss_density);  // per-element W/m^3 (time-avg)
+    EM._data = data;
+    EM._edges = computeEdges(data);  // material/conductor interface edges
+    EM._util = null;                 // invalidate any cached period-sum map
+    EM._view = { zoom: 1, ox: 0, oy: 0 };   // reset pan/zoom for the new solution
+    return data;
+  });
 };
 
 // edges shared by two triangles of different region = conductor / material outline
@@ -189,10 +194,13 @@ EM.drawFrame = function (phi, accUtil) {
   const W = (cv.width = cv.clientWidth), H = (cv.height = cv.clientHeight);
   const ctx = cv.getContext("2d");
   ctx.clearRect(0, 0, W, H);
+  EM._lastPhi = phi;
   const ext = d.extent, sc = 0.92 * Math.min(W, H) / (2 * ext);
+  const vz = EM._view.zoom, vox = EM._view.ox, voy = EM._view.oy;
   // y-down to match the Konva editor's screen coordinates (otherwise off-centre
-  // or rotated geometry appears vertically flipped vs. what was drawn)
-  const X = (x) => W / 2 + x * sc, Y = (y) => H / 2 + y * sc;
+  // or rotated geometry appears vertically flipped vs. what was drawn). Pan/zoom
+  // (vox,voy,vz) let you scroll into the solution; the colorbar stays fixed.
+  const X = (x) => W / 2 + vox + x * sc * vz, Y = (y) => H / 2 + voy + y * sc * vz;
   const c = Math.cos(phi), s = Math.sin(phi), scale = fieldScale(d, kind);
   const n = d.tris, nodes = d.nodes, NE = n.length / 3, NN = nodes.length / 2;
 
@@ -342,7 +350,8 @@ EM.valueAt = function (px, py) {
   if (!d || !nv) return null;
   const cv = document.getElementById("fieldCanvas");
   const W = cv.width, H = cv.height, ext = d.extent, sc = 0.92 * Math.min(W, H) / (2 * ext);
-  const xm = (px - W / 2) / sc, ym = (py - H / 2) / sc;
+  const vz = EM._view.zoom;
+  const xm = (px - W / 2 - EM._view.ox) / (sc * vz), ym = (py - H / 2 - EM._view.oy) / (sc * vz);
   const hit = triAt(d, xm, ym);
   if (!hit) return null;
   if (!valid[hit.t]) return { text: readoutText(EM._lastKind, 0, true, EM._isUtil) };
@@ -359,12 +368,21 @@ function updateHoverReadout() {
   el.textContent = r.text;
   el.style.left = h.ox + "px"; el.style.top = h.oy + "px"; el.style.display = "block";
 }
-(function bindHoverReadout() {
+EM.redraw = function () { if (EM._data) EM.drawFrame(EM._lastPhi || 0); };
+(function bindFieldInteraction() {
   const cv = document.getElementById("fieldCanvas"), overlay = document.getElementById("fieldOverlay");
   if (!cv || !overlay) return;
   EM._hover = { active: false, px: 0, py: 0, ox: 0, oy: 0 };
+  let pan = null;
   cv.addEventListener("mousemove", (e) => {
-    const r = cv.getBoundingClientRect(), o = overlay.getBoundingClientRect();
+    const r = cv.getBoundingClientRect();
+    if (pan) {   // drag = pan the solution
+      EM._view.ox = pan.ox + (e.clientX - pan.x) * (cv.width / r.width);
+      EM._view.oy = pan.oy + (e.clientY - pan.y) * (cv.height / r.height);
+      EM.redraw();
+      return;
+    }
+    const o = overlay.getBoundingClientRect();
     EM._hover.px = (e.clientX - r.left) * (cv.width / r.width);
     EM._hover.py = (e.clientY - r.top) * (cv.height / r.height);
     EM._hover.ox = e.clientX - o.left + 14; EM._hover.oy = e.clientY - o.top + 14;
@@ -372,6 +390,25 @@ function updateHoverReadout() {
     updateHoverReadout();
   });
   cv.addEventListener("mouseleave", () => { EM._hover.active = false; updateHoverReadout(); });
+  cv.addEventListener("mousedown", (e) => {
+    pan = { x: e.clientX, y: e.clientY, ox: EM._view.ox, oy: EM._view.oy };
+    EM._hover.active = false; updateHoverReadout(); cv.style.cursor = "grabbing";
+  });
+  window.addEventListener("mouseup", () => { pan = null; cv.style.cursor = ""; });
+  cv.addEventListener("dblclick", () => { EM._view = { zoom: 1, ox: 0, oy: 0 }; EM.redraw(); });
+  cv.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    if (!EM._data) return;
+    const r = cv.getBoundingClientRect();
+    const px = (e.clientX - r.left) * (cv.width / r.width), py = (e.clientY - r.top) * (cv.height / r.height);
+    const W = cv.width, H = cv.height, ext = EM._data.extent, sc = 0.92 * Math.min(W, H) / (2 * ext);
+    const v = EM._view, oldZ = v.zoom;
+    let z = e.deltaY > 0 ? oldZ / 1.12 : oldZ * 1.12;
+    z = Math.max(0.5, Math.min(20, z));
+    const xw = (px - W / 2 - v.ox) / (sc * oldZ), yw = (py - H / 2 - v.oy) / (sc * oldZ);  // keep point under cursor
+    v.zoom = z; v.ox = px - W / 2 - xw * sc * z; v.oy = py - H / 2 - yw * sc * z;
+    EM.redraw();
+  }, { passive: false });
 })();
 
 EM.play = function () {
@@ -412,5 +449,3 @@ EM.sumOverPeriod = function (frames = 90) {
   };
   EM._anim = requestAnimationFrame(step);
 };
-
-boot().catch((e) => { statusEl().textContent = "Boot error: " + e; console.error(e); });
