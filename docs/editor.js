@@ -4,10 +4,13 @@ const PPM = 4;          // pixels per millimetre at scale 1
 const GRID = 5;         // grid / snap step in mm
 const PHASES = ["A", "B", "C"];
 const PHASE_COLOR = { A: "#d65f5f", B: "#5f9ed6", C: "#5fd68a" };
+const PASSIVE_COLOR = "#9aa0a6";   // group=null: passive enclosure / divider
+const colorFor = (g) => (g == null ? PASSIVE_COLOR : (PHASE_COLOR[g] || "#888"));
 const MAT = {
   Copper: { name: "copper", sigma: 5.8e7, mu_r: 1.0 },
   Aluminium: { name: "aluminium", sigma: 3.5e7, mu_r: 1.0 },
   Steel: { name: "steel", sigma: 1.0e7, mu_r: 200.0 },
+  Stainless: { name: "stainless", sigma: 1.4e6, mu_r: 1.0 },
 };
 const ROT_SNAPS = [0, 15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180,
                    -15, -30, -45, -60, -75, -90, -105, -120, -135, -150, -165];
@@ -76,7 +79,7 @@ stage.on("dragmove dragend", (e) => { if (e.target === stage) drawGrid(); });
 // ---- model <-> Konva ------------------------------------------------------
 function makeNode(c) {
   const common = { x: c.x, y: c.y, rotation: c.rot, draggable: true,
-                   fill: PHASE_COLOR[c.group] || "#888", stroke: "#222", strokeWidth: 0.4 };
+                   fill: colorFor(c.group), stroke: "#222", strokeWidth: 0.4 };
   let node;
   if (c.type === "rect")
     node = new Konva.Rect({ ...common, width: c.w, height: c.h, offsetX: c.w / 2, offsetY: c.h / 2 });
@@ -187,6 +190,79 @@ function addConductor(type, group) {
   updateAreas();
 }
 
+// ---- draw enclosure walls (passive sheet-metal polylines) -----------------
+let drawMode = false, wallPts = [], previewLine = null, rubber = null;
+
+function worldPt() {
+  const p = stage.getPointerPosition(); if (!p) return null;
+  const s = stage.scaleX();
+  return { x: snap((p.x - stage.x()) / s), y: snap((p.y - stage.y()) / s) };
+}
+// one thin rectangle conductor spanning p0->p1 (a wall segment)
+function wallRect(p0, p1, t, busbar, material) {
+  const dx = p1.x - p0.x, dy = p1.y - p0.y, len = Math.hypot(dx, dy) || GRID;
+  return { id: uid, name: "W" + uid, type: "rect", w: len, h: t, r: 0,
+           x: (p0.x + p1.x) / 2, y: (p0.y + p1.y) / 2,
+           rot: (Math.atan2(dy, dx) * 180) / Math.PI,
+           group: null, material, busbar };
+}
+function startWallMode() {
+  if (drawMode) { exitWallMode(); return; }
+  exitIsolation(); select(null);
+  drawMode = true; wallPts = [];
+  stage.draggable(false);
+  conductors.forEach((c) => c.node.listening(false));   // clicks fall through to the stage
+  const sw = 1.5 / stage.scaleX();
+  previewLine = new Konva.Line({ points: [], stroke: "#1f6feb", strokeWidth: sw, listening: false });
+  rubber = new Konva.Line({ points: [], stroke: "#1f6feb", strokeWidth: sw, dash: [3, 3], listening: false });
+  layer.add(previewLine); layer.add(rubber);
+  $("wallBtn").style.background = "#1f6feb"; $("wallBtn").style.color = "#fff";
+  $("isoBadge").textContent = "drawing wall — click to add points, double-click/Enter to finish, C to close, Esc cancels";
+}
+function exitWallMode() {
+  drawMode = false; wallPts = [];
+  if (previewLine) { previewLine.destroy(); previewLine = null; }
+  if (rubber) { rubber.destroy(); rubber = null; }
+  stage.draggable(true);
+  conductors.forEach((c) => c.node.listening(true));
+  $("wallBtn").style.background = ""; $("wallBtn").style.color = "";
+  $("isoBadge").textContent = "";
+  layer.batchDraw();
+}
+function wallVertex() {
+  const w = worldPt(); if (!w) return;
+  wallPts.push(w);
+  previewLine.points(wallPts.flatMap((p) => [p.x, p.y]));
+  layer.batchDraw();
+}
+function updateRubber() {
+  if (!drawMode || !wallPts.length) return;
+  const w = worldPt(); if (!w) return;
+  const last = wallPts[wallPts.length - 1];
+  rubber.points([last.x, last.y, w.x, w.y]);
+  layer.batchDraw();
+}
+function finishWall(close) {
+  // dedupe consecutive coincident points (a finishing double-click adds one)
+  const pts = [];
+  for (const p of wallPts)
+    if (!pts.length || pts[pts.length - 1].x !== p.x || pts[pts.length - 1].y !== p.y) pts.push(p);
+  exitWallMode();
+  if (pts.length < 2) return;
+  const t = Math.max(GRID / 5, +$("wallT").value || 3), material = $("wallMat").value;
+  const bb = "bb" + uid++;
+  const segs = [];
+  for (let i = 0; i < pts.length - 1; i++) segs.push([pts[i], pts[i + 1]]);
+  if (close && pts.length >= 3) segs.push([pts[pts.length - 1], pts[0]]);
+  let first = null;
+  for (const [a, b] of segs) {
+    const c = wallRect(a, b, t, bb, material); uid++;
+    conductors.push(c); makeNode(c); first = first || c;
+  }
+  layer.batchDraw(); updateAreas();
+  if (first) select(first);   // select the whole wall busbar so it's movable
+}
+
 // ---- busbar isolation (double-click to edit a busbar) ---------------------
 function enterIsolation(bb) {
   editBusbar = bb;
@@ -258,8 +334,15 @@ function rotateGroup(deg) {
   updateAreas();
 }
 
-stage.on("click tap", (e) => { if (e.target === stage) select(null); });
-stage.on("dblclick dbltap", (e) => { if (e.target === stage) exitIsolation(); });
+stage.on("click tap", (e) => {
+  if (drawMode) { wallVertex(); return; }
+  if (e.target === stage) select(null);
+});
+stage.on("dblclick dbltap", (e) => {
+  if (drawMode) { finishWall(false); return; }
+  if (e.target === stage) exitIsolation();
+});
+stage.on("mousemove", () => { if (drawMode) updateRubber(); });
 
 // ---- properties panel -----------------------------------------------------
 const $ = (id) => document.getElementById(id);
@@ -269,7 +352,7 @@ function fillProps(c) {
   $("pH").value = c.h;
   $("pHlabel").parentElement.style.display = c.type === "rect" ? "" : "none";
   $("pX").value = c.x; $("pY").value = c.y; $("pRot").value = c.rot;
-  $("pPhase").value = c.group; $("pMat").value = c.material;
+  $("pPhase").value = c.group == null ? "P" : c.group; $("pMat").value = c.material;
   // size/position are per-shape (edit a group's pieces via isolation); rotation
   // works on a group too — it spins the whole busbar to the typed angle.
   for (const id of ["pW", "pH", "pX", "pY"]) $(id).disabled = !single;
@@ -290,11 +373,12 @@ function readProps() {
     const delta = (+$("pRot").value) - c.rot;
     if (delta) rotateGroup(delta);
   }
-  // phase + material apply to the whole busbar
-  const phase = $("pPhase").value, material = $("pMat").value;
+  // phase + material apply to the whole busbar ("P" = passive enclosure -> null)
+  const phase = $("pPhase").value === "P" ? null : $("pPhase").value;
+  const material = $("pMat").value;
   for (const m of selGroup) {
     m.group = phase; m.material = material;
-    m.node.fill(PHASE_COLOR[phase] || "#888");
+    m.node.fill(colorFor(phase));
   }
   layer.batchDraw();
   updateAreas();
@@ -334,13 +418,14 @@ function loadSceneDict(d) {
   uid = 1;
   $("freq").value = d.frequency; $("threephase").checked = d.three_phase;
   $("current").value = d.line_current;
-  const matName = (m) => ({ copper: "Copper", aluminium: "Aluminium", steel: "Steel" }[m.name] || "Copper");
+  const matName = (m) => ({ copper: "Copper", aluminium: "Aluminium", steel: "Steel",
+                            stainless: "Stainless" }[m.name] || "Copper");
   for (const cd of d.conductors) {
     const s = cd.shape;
     const c = { id: uid, name: cd.name, type: s.type === "circle" ? "circle" : "rect",
       w: (s.width || 0) * 1000, h: (s.height || 0) * 1000, r: (s.radius || 0) * 1000,
       x: cd.placement[0] * 1000, y: cd.placement[1] * 1000, rot: cd.placement[2],
-      group: cd.group || "A", material: matName(cd.material), busbar: cd.busbar || ("bb" + uid) };
+      group: cd.group ?? null, material: matName(cd.material), busbar: cd.busbar || ("bb" + uid) };
     uid++; conductors.push(c); makeNode(c);
   }
   layer.batchDraw();
@@ -350,6 +435,7 @@ function loadSceneDict(d) {
 // ---- toolbar / solve ------------------------------------------------------
 $("addBar").onclick = () => addConductor("rect", "A");
 $("addRound").onclick = () => addConductor("circle", "A");
+$("wallBtn").onclick = startWallMode;
 $("del").onclick = () => { if (selected) { selected.node.destroy(); conductors = conductors.filter((c) => c !== selected); select(null); layer.batchDraw(); updateAreas(); } };
 
 // ---- copy / paste geometry ------------------------------------------------
@@ -385,6 +471,11 @@ $("paste").onclick = pasteClipboard;
 
 document.addEventListener("keydown", (e) => {
   const typing = /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName);
+  if (drawMode && !typing) {   // wall-drawing shortcuts take precedence
+    if (e.key === "Escape") { exitWallMode(); e.preventDefault(); return; }
+    if (e.key === "Enter") { finishWall(false); e.preventDefault(); return; }
+    if (e.key.toLowerCase() === "c") { finishWall(true); e.preventDefault(); return; }
+  }
   if (e.key === "Delete" && selected) $("del").onclick();
   if (e.key === "Escape") { exitIsolation(); select(null); }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "c") { copySelection(); e.preventDefault(); }
@@ -441,7 +532,8 @@ function fillResults(data) {
   for (const c of data.conductors) {
     const tr2 = document.createElement("tr");
     const share = c.share == null ? "-" : (c.share * 100).toFixed(0) + "%";
-    tr2.innerHTML = `<td>${c.group}</td><td>${c.I.toFixed(0)}</td><td>${share}</td><td>${c.loss.toPrecision(3)}</td>`;
+    const grp = c.group == null ? "encl" : c.group;   // passive enclosure / divider
+    tr2.innerHTML = `<td>${grp}</td><td>${c.I.toFixed(0)}</td><td>${share}</td><td>${c.loss.toPrecision(3)}</td>`;
     tb.appendChild(tr2);
   }
   const ag = data.area_group || {}, eff = data.eff_area_90 || {};

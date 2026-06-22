@@ -44,6 +44,7 @@
     <span class="sep"></span>
     <button id="addBar">+ Bar</button>
     <button id="addRound">+ Round</button>
+    <button id="wallBtn" title="Draw a passive sheet-metal enclosure / divider (polyline)">✏ Wall</button>
     <button id="copy">Copy</button>
     <button id="paste">Paste</button>
     <button id="del">Delete</button>
@@ -100,6 +101,12 @@
       <label>Mesh density <span id="meshScaleVal" class="muted">1.0×</span></label>
       <input id="meshScale" type="range" min="0.6" max="1.8" step="0.1" value="1" />
       <div class="muted">Finer = more accurate but slower. Applies on the next Solve.</div>
+      <div class="grid2" style="margin-top:6px">
+        <div><label>Wall thickness (mm)</label><input id="wallT" type="number" value="3" step="0.5" min="0.5"></div>
+        <div><label>Wall material</label>
+          <select id="wallMat"><option>Steel</option><option>Stainless</option><option>Aluminium</option></select></div>
+      </div>
+      <div class="muted">✏ Wall: click points, double-click/Enter to finish, C to close a loop, Esc cancels. Walls are passive (no terminal current).</div>
       <div class="muted" style="margin-top:6px">Phase:
         <span style="color:#d65f5f;font-weight:700">■ A</span>
         <span style="color:#5f9ed6;font-weight:700">■ B</span>
@@ -119,10 +126,11 @@
           <div><label>y (mm)</label><input id="pY" type="number" step="1"></div>
           <div><label>Rotation (°)</label><input id="pRot" type="number" step="5"></div>
           <div><label>Phase</label>
-            <select id="pPhase"><option>A</option><option>B</option><option>C</option></select></div>
+            <select id="pPhase"><option>A</option><option>B</option><option>C</option>
+              <option value="P">Passive (enclosure)</option></select></div>
         </div>
         <label>Material</label>
-        <select id="pMat"><option>Copper</option><option>Aluminium</option><option>Steel</option></select>
+        <select id="pMat"><option>Copper</option><option>Aluminium</option><option>Steel</option><option>Stainless</option></select>
       </div>
 
       <div id="resultsBox" hidden>
@@ -136,7 +144,7 @@
   <div id="progress"><div id="progressBar"></div></div>
 
   <script src="https://unpkg.com/konva@9/konva.min.js"></script>
-  <script src="engine.js?v=25"></script>
-  <script src="editor.js?v=25"></script>
+  <script src="engine.js?v=26"></script>
+  <script src="editor.js?v=26"></script>
 </body>
 </html>
