@@ -12,11 +12,11 @@ from pathlib import Path
 
 from emsim.geometry.model import Conductor
 from emsim.geometry.shapes import Circle, Placement, Polygon, Rectangle
-from emsim.materials import AIR, ALUMINIUM, COPPER, STEEL, Material
+from emsim.materials import AIR, ALUMINIUM, COPPER, STAINLESS, STEEL, Material
 from emsim.scene import Scene
 
 FORMAT_VERSION = 1
-_PRESETS = {m.name: m for m in (COPPER, ALUMINIUM, STEEL, AIR)}
+_PRESETS = {m.name: m for m in (COPPER, ALUMINIUM, STEEL, STAINLESS, AIR)}
 
 
 def _shape_to_dict(s) -> dict:

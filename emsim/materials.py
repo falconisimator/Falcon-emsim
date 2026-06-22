@@ -38,6 +38,9 @@ ALUMINIUM = Material("aluminium", sigma=3.5e7, mu_r=1.0)
 AIR = Material("air", sigma=0.0, mu_r=1.0)
 # Generic linear (low-field) magnetic steel for the enclosure.
 STEEL = Material("steel", sigma=1.0e7, mu_r=200.0)
+# Austenitic stainless (304/316): conductive but effectively non-magnetic, so
+# EM-easy (skin depth ~55 mm @ 60 Hz) -- a light enclosure option.
+STAINLESS = Material("stainless", sigma=1.4e6, mu_r=1.0)
 
 
 class MaterialTable:

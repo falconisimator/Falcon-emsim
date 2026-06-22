@@ -33,14 +33,19 @@ def solve_scene(scene_dict) -> str:
     # cut so the field map isn't visibly faceted (still browser-friendly).
     ext0 = max(abs(c.placement.x) + abs(c.placement.y) + c.shape.bounding_radius()
                for c in sc.conductors)
-    min_char = min(c.shape.char_size() for c in sc.conductors)
     # mesh_scale (from the UI slider): >1 = finer, <1 = coarser. Clamped so the
     # in-browser solve stays tractable.
     ms = float(scene_dict.get("mesh_scale", 1.0) or 1.0)
     ms = min(2.0, max(0.6, ms))
     sc.domain_radius = 2.3 * ext0
-    sc.lc_surface = (min_char / 8.0) / ms
     sc.lc_far = (0.18 * ext0) / ms
+    # Per-region mesh sizing: each conductor (incl. thin enclosure walls) is sized
+    # by its own dimension, kept fine only locally -- a 2 mm wall no longer pins
+    # the whole domain to ~0.25 mm.
+    floor = sc.lc_far / 60.0
+    sc.region_sizes = [max(min(c.shape.char_size() / 6.0, sc.lc_far * 0.5), floor) / ms
+                       for c in sc.conductors]
+    sc.lc_surface = max(sc.region_sizes)   # harmless scalar fallback
 
     sol = sc.solve()
     res = sc.analyse(sol)
@@ -66,7 +71,9 @@ def solve_scene(scene_dict) -> str:
     for c in sc.conductors:
         sigma_el[reg == c.region_tag] = c.material.sigma
     sig = sigma_el[phys]
-    ploss = np.where(sig > 0, 0.5 * np.abs(J) ** 2 / sig, 0.0)
+    ploss = np.zeros_like(sig)
+    nz = sig > 0
+    ploss[nz] = 0.5 * np.abs(J[nz]) ** 2 / sig[nz]
     g_area = defaultdict(float)
     for c in sc.conductors:
         if c.group is not None:

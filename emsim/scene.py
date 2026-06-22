@@ -72,6 +72,7 @@ class Scene:
     three_phase: bool = True  # groups A/B/C forced to 0/-120/+120 deg
     line_current: float = 1000.0  # phase-current magnitude for 3-phase mode
     mesh_backend: str = "gmsh"  # "gmsh" (desktop) or "py" (gmsh-free, for web/Pyodide)
+    region_sizes: list[float] | None = None  # per-conductor mesh size (py backend); None => auto
 
     def busbar_of(self, c: Conductor) -> str:
         """Stable busbar id for a conductor (falls back to a per-object id)."""
@@ -146,6 +147,22 @@ class Scene:
         lc_f = self.lc_far or min_char
         return lc_s, lc_f
 
+    def _region_sizes(self, cfg: SimulationConfig) -> list[float]:
+        """Per-conductor target mesh size: resolve each region's own skin depth
+        and a few cells across its thinnest dimension, independently. This is
+        what lets a thin steel wall stay local instead of refining the whole
+        domain (the "crazy mesh")."""
+        sizes = []
+        for c in self.conductors:
+            char = c.shape.char_size()
+            if c.material.sigma > 0:
+                d = cfg.skin_depth(c.material.sigma, c.material.mu_r)
+                h = min(d / 3.0, char / 4.0)
+            else:
+                h = char / 4.0
+            sizes.append(h)
+        return sizes
+
     def material_table(self) -> MaterialTable:
         mt = MaterialTable({AIR_TAG: AIR, KELVIN_TAG: AIR})
         for c in self.conductors:
@@ -174,11 +191,17 @@ class Scene:
         regions = [(c.shape, c.placement, c.region_tag) for c in self.conductors]
         if self.mesh_backend == "py":
             from emsim.mesh.py_backend import mesh_model as _mesh_model
+            # per-region sizing so a thin wall doesn't refine the whole domain
+            sizes = self.region_sizes or self._region_sizes(cfg)
+            sizes = [min(max(h, lc_f / 60.0), lc_f) for h in sizes]
+            mesh = _mesh_model(
+                regions, R, lc_surface=lc_s, lc_far=lc_f, region_sizes=sizes,
+                grade_distance=R / 3.0, order=self.order,
+            )
         else:
-            _mesh_model = mesh_model
-        mesh = _mesh_model(
-            regions, R, lc_surface=lc_s, lc_far=lc_f, grade_distance=R / 3.0, order=self.order
-        )
+            mesh = mesh_model(
+                regions, R, lc_surface=lc_s, lc_far=lc_f, grade_distance=R / 3.0, order=self.order
+            )
         if self.boundary == "kelvin":
             # Kelvin open boundary uses the gmsh mirror-disk; not available in the
             # gmsh-free backend, so fall back to the Dirichlet box there.

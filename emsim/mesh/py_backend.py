@@ -54,41 +54,67 @@ def _outline_points(shape, pl: Placement, h: float) -> np.ndarray:
     return np.asarray(pts)
 
 
-def _poisson_fill(R, boundary, hfield, lc_surface, lc_far) -> np.ndarray:
-    """Graded interior points: dense (lc_surface) near boundaries, coarse far."""
-    cell = lc_far  # spatial-hash cell >= max spacing
-    grid: dict[tuple[int, int], list[np.ndarray]] = {}
+def _poisson_fill(R, boundary, hfield, lc_min, lc_far,
+                  fine_bbox=None, grade_distance=None) -> np.ndarray:
+    """Graded interior points: dense (lc_min) near boundaries, coarse far.
 
-    def add(p):
-        grid.setdefault((int(p[0] // cell), int(p[1] // cell)), []).append(p)
+    Candidates are generated multi-resolution: coarse grids (lc_far and a mid
+    level) over the whole disk for the bulk, plus a fine (lc_min) grid only over
+    the conductor bounding box + grading band -- and that fine grid is capped, so
+    a large domain with thin features (a sheet-metal enclosure) stays tractable
+    instead of generating ~(2R/lc_min)^2 candidates over the entire disk.
+    """
+    sets = []
+    # coarse + mid candidates over the whole disk fill the bulk cheaply
+    for step in (lc_far, max(lc_far / 4.0, lc_min)):
+        g = np.arange(-R + step, R, step)
+        xx, yy = np.meshgrid(g, g)
+        sets.append(np.column_stack([xx.ravel(), yy.ravel()]))
+    # fine candidates only near the conductors (their bbox + grading band), capped
+    if fine_bbox is not None and lc_min < lc_far:
+        pad = grade_distance or 0.0
+        x0 = max(fine_bbox[0] - pad, -R); x1 = min(fine_bbox[1] + pad, R)
+        y0 = max(fine_bbox[2] - pad, -R); y1 = min(fine_bbox[3] + pad, R)
+        step = lc_min
+        n_est = max(1.0, (x1 - x0) / step) * max(1.0, (y1 - y0) / step)
+        cap = 150000.0
+        if n_est > cap:
+            step *= math.sqrt(n_est / cap)   # coarsen the fine grid to stay bounded
+        gx = np.arange(x0, x1, step); gy = np.arange(y0, y1, step)
+        xx, yy = np.meshgrid(gx, gy)
+        sets.append(np.column_stack([xx.ravel(), yy.ravel()]))
 
-    def ok(p, h):
-        ci, cj = int(p[0] // cell), int(p[1] // cell)
-        for di in (-1, 0, 1):
-            for dj in (-1, 0, 1):
-                for q in grid.get((ci + di, cj + dj), ()):
-                    if (p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2 < h * h:
-                        return False
-        return True
-
-    for p in boundary:  # boundary points seed the hash but are NOT returned
-        add(p)
-
-    # candidate interior points on a fine grid, processed fine-spacing-first
-    accepted: list[np.ndarray] = []
-    step = lc_surface
-    gx = np.arange(-R + step, R, step)
-    xx, yy = np.meshgrid(gx, gx)
-    cand = np.column_stack([xx.ravel(), yy.ravel()])
-    cand = cand[np.hypot(cand[:, 0], cand[:, 1]) < R - 0.5 * lc_surface]
+    cand = np.vstack(sets)
+    cand = cand[np.hypot(cand[:, 0], cand[:, 1]) < R - 0.5 * lc_min]
     h_cand = hfield(cand)
-    for idx in np.argsort(h_cand):  # smallest target spacing first
-        p, h = cand[idx], h_cand[idx]
-        if ok(p, 0.8 * h):
-            add(p)
-            accepted.append(p)
+    order = np.argsort(h_cand)        # smallest target spacing first
+    cand, h_cand = cand[order], h_cand[order]
 
-    return np.asarray(accepted) if accepted else np.empty((0, 2))
+    # Poisson-disk reject against an incrementally grown cKDTree. A uniform
+    # spatial hash can't handle the 0.9 mm-to-50 mm size range of an enclosure
+    # (fine cells overload); a periodically rebuilt KD-tree + per-batch dedup
+    # stays near-linear regardless of the size spread.
+    base = np.asarray(boundary, dtype=float)
+    tree = cKDTree(base)
+    chunks = []
+    BATCH = 256
+    for i in range(0, len(cand), BATCH):
+        P, H = cand[i:i + BATCH], h_cand[i:i + BATCH]
+        keep = tree.query(P)[0] >= 0.8 * H          # far enough from fixed points
+        Pk, Hk = P[keep], H[keep]
+        picked = []
+        for k in range(len(Pk)):
+            p, h = Pk[k], Hk[k]
+            r2 = (0.8 * h) ** 2
+            if all((p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2 >= r2 for q in picked):
+                picked.append(p)
+        if picked:
+            ch = np.asarray(picked)
+            chunks.append(ch)
+            base = np.vstack([base, ch])
+            tree = cKDTree(base)
+
+    return np.vstack(chunks) if chunks else np.empty((0, 2))
 
 
 def mesh_model(
@@ -96,38 +122,65 @@ def mesh_model(
     R: float,
     air_tag: int = AIR_TAG,
     *,
-    lc_surface: float,
+    lc_surface: float | None = None,
     lc_far: float,
+    region_sizes: list[float] | None = None,
     grade_distance: float | None = None,
     order: int = 1,
     verbose: bool = False,
 ) -> Mesh:
-    """Mesh placed conductor shapes in an air disk (gmsh-free). P1 only."""
+    """Mesh placed conductor shapes in an air disk (gmsh-free). P1 only.
+
+    ``region_sizes`` (optional, one target edge length per region, aligned with
+    ``regions``) sizes each region by its own characteristic dimension and grades
+    locally back out to ``lc_far``. This keeps a thin sheet-metal wall fine only
+    near the wall instead of pinning the *whole* domain to the thinnest feature
+    (which is what made enclosures blow the node count up). Falls back to the
+    scalar ``lc_surface`` for every region when omitted (back-compat).
+    """
     if order != 1:
         raise NotImplementedError("py_backend supports first-order (P1) only")
+    if region_sizes is None:
+        if lc_surface is None:
+            raise ValueError("provide lc_surface or region_sizes")
+        region_sizes = [lc_surface] * len(regions)
+    lc_min = min(region_sizes)
     if grade_distance is None:
         grade_distance = 2.0 * max(s.char_size() for s, _, _ in regions)
 
-    cond_bdry = np.vstack([_outline_points(s, pl, lc_surface) for s, pl, _ in regions])
+    # sample each region's outline at its own target spacing, remembering the
+    # local size per boundary point so the size field grades from it
+    cond_bdry_parts, bdry_lc_parts = [], []
+    for (s, pl, _), h in zip(regions, region_sizes):
+        p = _outline_points(s, pl, h)
+        cond_bdry_parts.append(p)
+        bdry_lc_parts.append(np.full(len(p), h))
+    cond_bdry = np.vstack(cond_bdry_parts)
+    bdry_lc = np.concatenate(bdry_lc_parts)
+
     nO = max(48, int(math.ceil(2 * math.pi * R / lc_far)))
     t = np.linspace(0, 2 * np.pi, nO, endpoint=False)
     outer = np.column_stack([R * np.cos(t), R * np.sin(t)])
     boundary = np.vstack([cond_bdry, outer])
 
     tree = cKDTree(cond_bdry)
-    slope = (lc_far - lc_surface) / grade_distance
 
     def hfield(P):
-        d = tree.query(P)[0]
-        return np.clip(lc_surface + slope * d, lc_surface, lc_far)
+        d, idx = tree.query(P)
+        lc_near = bdry_lc[idx]                       # size of the nearest outline
+        slope = (lc_far - lc_near) / grade_distance
+        return np.clip(lc_near + slope * d, lc_near, lc_far)
 
-    interior = _poisson_fill(R, boundary, hfield, lc_surface, lc_far)
+    fine_bbox = (float(cond_bdry[:, 0].min()), float(cond_bdry[:, 0].max()),
+                 float(cond_bdry[:, 1].min()), float(cond_bdry[:, 1].max()))
+    interior = _poisson_fill(R, boundary, hfield, lc_min, lc_far,
+                             fine_bbox=fine_bbox, grade_distance=grade_distance)
     pts = np.vstack([boundary, interior]) if interior.size else boundary
 
     # Deduplicate coincident points. Overlapping conductor outlines (e.g. a
     # composite T/L busbar made of several rectangles) sample the same point
     # twice; duplicate nodes orphan stiffness rows -> "factor exactly singular".
-    quant = np.round(pts / (lc_surface * 1e-3)).astype(np.int64)
+    quant = np.round(pts / (lc_min * 1e-3)).astype(np.int64)
     _, keep = np.unique(quant, axis=0, return_index=True)
     pts = pts[np.sort(keep)]
 

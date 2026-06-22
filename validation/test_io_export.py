@@ -7,7 +7,7 @@ import math
 from emsim.geometry.model import Conductor
 from emsim.geometry.shapes import Placement, Rectangle
 from emsim.io import load_scene, save_scene
-from emsim.materials import COPPER
+from emsim.materials import COPPER, STAINLESS
 from emsim.post.animate import evaluation_figure, field_gif
 from emsim.scene import Scene
 
@@ -35,6 +35,23 @@ def test_scene_roundtrip(tmp_path) -> None:
     assert back.three_phase and back.line_current == 500.0
     assert back.conductors[0].material is COPPER  # preset identity preserved
     assert back.conductors[0].shape.width == 0.01
+
+
+def test_passive_stainless_roundtrip(tmp_path) -> None:
+    """A passive (group=None) stainless enclosure wall round-trips through JSON."""
+    sc = Scene(
+        conductors=[
+            Conductor("A", Rectangle(0.01, 0.03), Placement(-0.02, 0, 0), COPPER, "A", "bb1"),
+            Conductor("Wall", Rectangle(0.1, 0.002), Placement(0, 0.05, 0), STAINLESS, None, "enc"),
+        ],
+        boundary="dirichlet",
+    )
+    p = tmp_path / "encl.json"
+    save_scene(sc, p)
+    back = load_scene(p)
+    assert [c.group for c in back.conductors] == ["A", None]   # null group survives
+    assert back.conductors[1].material is STAINLESS            # preset identity preserved
+    assert back.conductors[1].busbar == "enc"
 
 
 def test_export_gif_and_graphs(tmp_path) -> None:
