@@ -526,15 +526,32 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-// ---- field view (large overlay) ------------------------------------------
-function showFieldView() {
-  document.getElementById("fieldOverlay").style.display = "flex";
-  requestAnimationFrame(() => renderField());
-}
-function hideFieldView() {
+// ---- top-level views: Designer / EM Results / Thermal --------------------
+let currentView = "designer";
+function setView(v) {
+  currentView = v;
+  document.querySelectorAll("#tabs .tab").forEach((t) => t.classList.toggle("active", t.dataset.view === v));
+  const fo = $("fieldOverlay"), th = $("thermalView");
   EM.stop();
-  document.getElementById("fieldOverlay").style.display = "none";
+  if (v === "designer") {
+    fo.style.display = "none"; th.style.display = "none";
+  } else if (v === "em") {
+    th.style.display = "none"; fo.style.display = "flex";
+    const has = !!EM._data;
+    $("emEmpty").style.display = has ? "none" : "flex";
+    if (has) requestAnimationFrame(() => renderField());
+  } else if (v === "thermal") {
+    fo.style.display = "none"; th.style.display = "flex";
+    $("thermalPrereq").textContent = EM._data
+      ? "EM solution ready ✓ — thermal solver not implemented yet."
+      : "Solve the EM problem first (Designer → Solve).";
+  }
 }
+document.querySelectorAll("#tabs .tab").forEach((t) =>
+  t.addEventListener("click", () => setView(t.dataset.view)));
+// keep the in-view buttons working, now as view switches
+function showFieldView() { setView("em"); }
+function hideFieldView() { setView("designer"); }
 $("editBtn").onclick = hideFieldView;
 $("showField").onclick = showFieldView;
 
