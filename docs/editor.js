@@ -532,6 +532,7 @@ function setView(v) {
   currentView = v;
   document.querySelectorAll("#tabs .tab").forEach((t) => t.classList.toggle("active", t.dataset.view === v));
   const fo = $("fieldOverlay"), th = $("thermalView");
+  $("geobar").style.display = v === "designer" ? "flex" : "none";   // geometry tools = Designer only
   EM.stop();
   if (v === "designer") {
     fo.style.display = "none"; th.style.display = "none";
