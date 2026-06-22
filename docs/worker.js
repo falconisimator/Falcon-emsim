@@ -3,7 +3,7 @@
 // back {type:'status'|'ready'|'progress'|'result'|'error'}.
 importScripts("https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js");
 
-let pyodide = null, solveFn = null;
+let pyodide = null, solveFn = null, thermalFn = null;
 
 async function boot() {
   pyodide = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.26.2/full/" });
@@ -26,19 +26,30 @@ async function boot() {
   }
   if (!ok) await micropip.install(wheelUrl, false, false); // deps=False
   solveFn = pyodide.runPython("from emsim.web import solve_scene\nsolve_scene");
+  thermalFn = pyodide.runPython("from emsim.web import solve_thermal\nsolve_thermal");
   postMessage({ type: "ready" });
 }
 boot().catch((e) => postMessage({ type: "error", text: "" + e }));
 
 onmessage = (e) => {
   const m = e.data;
-  if (m.type !== "solve") return;
-  if (!solveFn) { postMessage({ type: "error", id: m.id, text: "runtime not ready" }); return; }
-  try {
-    postMessage({ type: "progress", id: m.id, text: "Meshing + solving (in-browser)…" });
-    const json = solveFn(JSON.stringify(m.scene));
-    postMessage({ type: "result", id: m.id, json });
-  } catch (err) {
-    postMessage({ type: "error", id: m.id, text: "" + err });
+  if (m.type === "solve") {
+    if (!solveFn) { postMessage({ type: "error", id: m.id, text: "runtime not ready" }); return; }
+    try {
+      postMessage({ type: "progress", id: m.id, text: "Meshing + solving (in-browser)…" });
+      const json = solveFn(JSON.stringify(m.scene));
+      postMessage({ type: "result", id: m.id, json });
+    } catch (err) {
+      postMessage({ type: "error", id: m.id, text: "" + err });
+    }
+  } else if (m.type === "thermal") {
+    if (!thermalFn) { postMessage({ type: "error", id: m.id, text: "runtime not ready" }); return; }
+    try {
+      postMessage({ type: "progress", id: m.id, text: "Solving thermal…" });
+      const json = thermalFn(JSON.stringify(m.params));
+      postMessage({ type: "result", id: m.id, json });
+    } catch (err) {
+      postMessage({ type: "error", id: m.id, text: "" + err });
+    }
   }
 };

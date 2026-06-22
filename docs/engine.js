@@ -13,7 +13,7 @@ const statusEl = () => document.getElementById("status");
 
 // Pyodide runs in a Web Worker (worker.js) so a solve never blocks the main
 // thread -- the editor stays interactive and a progress bar can animate.
-const _worker = new Worker("worker.js?v=25");
+const _worker = new Worker("worker.js?v=33");   // bump with worker.js changes
 const _pending = new Map();
 let _solveSeq = 0;
 EM._onProgress = null;   // editor sets this to drive the progress bar / status
@@ -57,8 +57,64 @@ EM.solve = function (sceneDict) {
     EM._edges = computeEdges(data);  // material/conductor interface edges
     EM._util = null;                 // invalidate any cached period-sum map
     EM._view = { zoom: 1, ox: 0, oy: 0 };   // reset pan/zoom for the new solution
+    EM._thermal = null;                      // EM changed -> thermal is stale
     return data;
   });
+};
+
+// Steady thermal solve in the worker, reusing the cached EM loss (no EM re-run).
+EM.solveThermal = function (params) {
+  return new Promise((resolve, reject) => {
+    const id = ++_solveSeq;
+    _pending.set(id, { resolve, reject });
+    _worker.postMessage({ type: "thermal", id, params });
+  }).then((json) => {
+    const data = JSON.parse(json);
+    if (data.error) throw new Error(data.error);
+    data.T = Float64Array.from(data.T);
+    EM._thermal = data;
+    return data;
+  });
+};
+
+// render the steady temperature field on the solids (IR-style inferno colormap)
+EM.drawThermal = function () {
+  const d = EM._data, th = EM._thermal, cv = document.getElementById("thermalCanvas");
+  if (!cv || !d || !th) return;
+  const W = (cv.width = cv.clientWidth), H = (cv.height = cv.clientHeight);
+  const ctx = cv.getContext("2d");
+  ctx.clearRect(0, 0, W, H);
+  const ext = d.extent, sc = 0.92 * Math.min(W, H) / (2 * ext);
+  const X = (x) => W / 2 + x * sc, Y = (y) => H / 2 + y * sc;
+  const n = d.tris, nodes = d.nodes, T = th.T, region = d.region;
+  const tmin = th.Tamb, tmax = Math.max(th.Tmax, tmin + 1e-3);
+  const colorOf = (t) => inferno((t - tmin) / (tmax - tmin));
+  for (let e = 0; e < n.length; e += 3) {
+    const t = e / 3; if (region[t] < 10) continue;     // conductors only; air stays blank
+    const i0 = n[e], i1 = n[e + 1], i2 = n[e + 2];
+    const x0 = X(nodes[i0 * 2]), y0 = Y(nodes[i0 * 2 + 1]);
+    const x1 = X(nodes[i1 * 2]), y1 = Y(nodes[i1 * 2 + 1]);
+    const x2 = X(nodes[i2 * 2]), y2 = Y(nodes[i2 * 2 + 1]);
+    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.lineTo(x2, y2); ctx.closePath();
+    fillGouraud(ctx, x0, y0, x1, y1, x2, y2, T[i0], T[i1], T[i2], colorOf);
+  }
+  ctx.strokeStyle = "rgba(15,15,15,0.9)"; ctx.lineWidth = 1.3; ctx.beginPath();
+  for (const [a, b] of EM._edges || []) {
+    ctx.moveTo(X(nodes[a * 2]), Y(nodes[a * 2 + 1])); ctx.lineTo(X(nodes[b * 2]), Y(nodes[b * 2 + 1]));
+  }
+  ctx.stroke();
+  // colorbar (°C)
+  const bw = 16, bx = W - 70, by = 26, bh = Math.max(40, H - 70);
+  for (let i = 0; i < bh; i++) {
+    const col = inferno(1 - i / bh);
+    ctx.fillStyle = `rgb(${col[0]},${col[1]},${col[2]})`; ctx.fillRect(bx, by + i, bw, 1);
+  }
+  ctx.strokeStyle = "#333"; ctx.lineWidth = 1; ctx.strokeRect(bx + 0.5, by + 0.5, bw, bh);
+  ctx.fillStyle = "#222"; ctx.font = "11px system-ui, sans-serif";
+  ctx.textAlign = "left"; ctx.textBaseline = "middle";
+  for (const [yy, v] of [[by, tmax], [by + bh / 2, (tmax + tmin) / 2], [by + bh, tmin]])
+    ctx.fillText(v.toFixed(0), bx + bw + 5, yy);
+  ctx.textBaseline = "alphabetic"; ctx.fillText("°C", bx - 2, by - 8);
 };
 
 // edges shared by two triangles of different region = conductor / material outline

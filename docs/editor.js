@@ -543,13 +543,40 @@ function setView(v) {
     if (has) requestAnimationFrame(() => renderField());
   } else if (v === "thermal") {
     fo.style.display = "none"; th.style.display = "flex";
-    $("thermalPrereq").textContent = EM._data
-      ? "EM solution ready ✓ — thermal solver not implemented yet."
-      : "Solve the EM problem first (Designer → Solve).";
+    if (!EM._data) {
+      $("thermalEmpty").style.display = "flex"; $("thermalSummary").style.display = "none";
+      $("thermalPrereq").textContent = "Solve the EM problem first (Designer → Solve).";
+    } else {
+      $("thermalEmpty").style.display = "none";
+      if (EM._thermal) requestAnimationFrame(() => { EM.drawThermal(); fillThermalSummary(); });
+      else requestAnimationFrame(() => computeThermal());   // auto-run on first entry
+    }
   }
 }
 document.querySelectorAll("#tabs .tab").forEach((t) =>
   t.addEventListener("click", () => setView(t.dataset.view)));
+
+// thermal: solve (reusing the cached EM loss) and render
+async function computeThermal() {
+  if (!EM._data) return;
+  $("thermalStatus").textContent = "solving…";
+  try {
+    const th = await EM.solveThermal({ airflow: +$("airflow").value, ambient: +$("ambient").value });
+    EM.drawThermal(); fillThermalSummary();
+    $("thermalStatus").textContent = `max ${th.Tmax.toFixed(1)} °C`;
+    $("status").textContent = `Thermal: max ${th.Tmax.toFixed(1)} °C, ΔT ${(th.Tmax - th.Tamb).toFixed(1)} K`;
+  } catch (err) { $("thermalStatus").textContent = "thermal error: " + err; console.error(err); }
+}
+function fillThermalSummary() {
+  const th = EM._thermal; if (!th) return;
+  const pct = (x) => (th.P_total > 0 ? (100 * x / th.P_total).toFixed(0) : "0");
+  let h = `<b>Max ${th.Tmax.toFixed(1)} °C</b> (ambient ${th.Tamb.toFixed(0)} °C, ΔT ${(th.Tmax - th.Tamb).toFixed(1)} K)<br>`;
+  h += `Heat ${th.P_total.toFixed(1)} W/m → convection ${th.P_conv.toFixed(1)} (${pct(th.P_conv)}%), `
+     + `radiation ${th.P_rad.toFixed(1)} (${pct(th.P_rad)}%)<br>`;
+  h += th.conductors.map((c) => `${c.name}: ${c.Tmax.toFixed(1)}°`).join(" · ");
+  const el = $("thermalSummary"); el.innerHTML = h; el.style.display = "block";
+}
+$("computeThermal").onclick = computeThermal;
 // keep the in-view buttons working, now as view switches
 function showFieldView() { setView("em"); }
 function hideFieldView() { setView("designer"); }
@@ -649,6 +676,8 @@ window.addEventListener("resize", () => {
   recenter();
   if (EM._data && document.getElementById("fieldOverlay").style.display === "flex" && !EM._anim)
     EM.drawFrame(0);
+  if (EM._thermal && document.getElementById("thermalView").style.display === "flex")
+    EM.drawThermal();
 });
 recenter();
 defaultScene();

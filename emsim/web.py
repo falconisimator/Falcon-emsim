@@ -18,6 +18,10 @@ from emsim.io import scene_from_dict
 from emsim.mesh.gmsh_backend import KELVIN_TAG
 from emsim.post.fields import element_B, element_Jz
 
+# Cache of the last EM solve so the thermal step can reuse the mesh + loss field
+# without re-running the (expensive) EM solve.
+_LAST: dict = {}
+
 
 def solve_scene(scene_dict) -> str:
     """Solve a scene (dict or JSON string) in the browser; return results JSON."""
@@ -122,6 +126,28 @@ def solve_scene(scene_dict) -> str:
     ext = max(abs(c.placement.x) + abs(c.placement.y) + 1.6 * c.shape.bounding_radius()
               for c in sc.conductors)
 
+    # cache what the thermal step needs so it can reuse the mesh + loss field
+    # without re-running the EM solve.
+    from emsim.thermal import THERMAL_PROPS
+    region_props = {}
+    for c in sc.conductors:
+        tp = THERMAL_PROPS.get(c.material.name, THERMAL_PROPS["copper"])
+        region_props[c.region_tag] = {
+            "k": tp["k"], "alpha": tp["alpha"], "eps": tp["eps"],
+            "Lchar": max(1e-3, c.shape.area() ** 0.5),   # convection length scale
+            "name": c.name, "group": c.group,
+        }
+    _LAST.clear()
+    _LAST.update({
+        "nodes": mesh.nodes,
+        "tris": mesh.tris[phys][:, :3],
+        "region": mesh.region_tag[phys],
+        "areas": areas[phys],
+        "ploss": ploss,
+        "region_props": region_props,
+        "cond_tags": set(region_props),
+    })
+
     payload = {
         "nodes": mesh.nodes.ravel().tolist(),
         "tris": mesh.tris[phys][:, :3].ravel().tolist(),
@@ -159,3 +185,18 @@ def solve_scene(scene_dict) -> str:
         ],
     }
     return json.dumps(payload)
+
+
+def solve_thermal(params) -> str:
+    """Steady thermal solve reusing the cached EM loss field (no EM re-solve).
+
+    ``params`` (dict or JSON str): {airflow: m/s, ambient: degC}.
+    """
+    if isinstance(params, str):
+        params = json.loads(params)
+    if not _LAST:
+        return json.dumps({"error": "no EM solution cached — solve the EM problem first"})
+    from emsim.thermal import solve_thermal as _solve
+    u = float(params.get("airflow", 1.0) or 0.0)
+    t_amb = float(params.get("ambient", 25.0))
+    return json.dumps(_solve(_LAST, u, t_amb))
