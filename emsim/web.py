@@ -47,6 +47,22 @@ def solve_scene(scene_dict) -> str:
                        for c in sc.conductors]
     sc.lc_surface = max(sc.region_sizes)   # harmless scalar fallback
 
+    # passive(floating): each floating passive busbar becomes its own terminal
+    # with prescribed current 0, so the solver finds the V/L that drives its net
+    # axial current to zero (an isolated / single-point-earthed plate). Bonded
+    # passive stays group=None (V/L=0 -> earthed both ends, net current free).
+    float_names = set()
+    for cd, c in zip(scene_dict.get("conductors", []), sc.conductors):
+        if c.group is None and cd.get("floating"):
+            gname = "F:" + (str(cd.get("busbar")) or c.name)
+            c.group = gname
+            float_names.add(gname)
+    for g in float_names:
+        sc.group_currents[g] = 0j
+
+    def is_phase(g):   # energized phase (A/B/C/...) vs passive (None or floating)
+        return g is not None and g not in float_names
+
     sol = sc.solve()
     res = sc.analyse(sol)
     mesh = sol.mesh
@@ -76,11 +92,11 @@ def solve_scene(scene_dict) -> str:
     ploss[nz] = 0.5 * np.abs(J[nz]) ** 2 / sig[nz]
     g_area = defaultdict(float)
     for c in sc.conductors:
-        if c.group is not None:
+        if is_phase(c.group):
             g_area[c.group] += areas[reg == c.region_tag].sum()
     javg = np.zeros(reg.shape[0], dtype=np.complex128)
     for c in sc.conductors:
-        if c.group is not None and g_area[c.group] > 0:
+        if is_phase(c.group) and g_area[c.group] > 0:
             javg[reg == c.region_tag] = sc.current_for_group(c.group) / g_area[c.group]
 
     # effective cross-section per phase: conductor area carrying >= 90% of its
@@ -92,7 +108,7 @@ def solve_scene(scene_dict) -> str:
     util[nz] = jmag[nz] / javg_mag[nz]
     g_area90 = defaultdict(float)
     for c in sc.conductors:
-        if c.group is not None:
+        if is_phase(c.group):
             g_area90[c.group] += areas[(reg == c.region_tag) & (util >= 0.9)].sum()
 
     # applied current density of the whole system = total terminal current / total
@@ -126,7 +142,7 @@ def solve_scene(scene_dict) -> str:
         "loss_per_density": float(loss_per_density),     # W/m per A/mm^2
         "loss_coeff": float(loss_coeff),                 # W/m per (A/mm^2)^2 (current-independent)
         "conductors": [
-            {"name": c.name, "group": c.group,
+            {"name": c.name, "group": ("float" if c.group in float_names else c.group),
              "I": float(abs(c.current)),
              "phase": float(np.degrees(np.angle(c.current))),
              "loss": float(c.loss),

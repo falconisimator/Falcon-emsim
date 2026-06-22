@@ -61,6 +61,45 @@ def test_passive_steel_enclosure_solves_and_is_bounded() -> None:
     assert region_ohmic_loss(sol, enc) > 0.0
 
 
+def _sized(sc):
+    ext0 = max(abs(c.placement.x) + abs(c.placement.y) + c.shape.bounding_radius()
+               for c in sc.conductors)
+    sc.domain_radius = 2.3 * ext0
+    sc.lc_far = 0.18 * ext0
+    floor = sc.lc_far / 60.0
+    sc.region_sizes = [max(min(c.shape.char_size() / 6.0, sc.lc_far * 0.5), floor)
+                       for c in sc.conductors]
+    return sc
+
+
+def test_floating_vs_bonded_enclosure() -> None:
+    """A single energized bar drives net flux through the box. A *bonded*
+    enclosure (group=None, V/L=0) acts as a shorted turn -> large net induced
+    current + loss; a *floating* enclosure (its own zero-current terminal)
+    forces net current to ~0 and dissipates less."""
+    def build(floating):
+        walls = _box(half=0.08)
+        bar = Conductor("A", Rectangle(0.02, 0.06), Placement(0, 0, 0), COPPER, "A", "bb1")
+        if floating:
+            for w in walls:
+                w.group = "enc"
+        sc = Scene(conductors=walls + [bar], frequency=60.0, three_phase=False,
+                   boundary="dirichlet", mesh_backend="py")
+        sc.group_currents = {"A": 2000 + 0j}
+        if floating:
+            sc.group_currents["enc"] = 0j
+        _sized(sc)
+        return sc, walls
+
+    scb, wb = build(False); solb = scb.solve(); tb = {w.region_tag for w in wb}
+    scf, wf = build(True);  solf = scf.solve(); tf = {w.region_tag for w in wf}
+    net_b, net_f = abs(region_current(solb, tb)), abs(region_current(solf, tf))
+    loss_b, loss_f = region_ohmic_loss(solb, tb), region_ohmic_loss(solf, tf)
+    assert net_b > 1.0                       # bonded box carries a real net current
+    assert net_f < 0.05 * net_b              # floating drives net current to ~0
+    assert loss_f < loss_b                   # ...and dissipates less than the shorted turn
+
+
 def test_thin_wall_does_not_refine_the_bars() -> None:
     """Adding a thin wall must not materially refine the bar regions far from it
     (the whole point of per-region sizing)."""

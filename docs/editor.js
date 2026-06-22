@@ -4,8 +4,11 @@ const PPM = 4;          // pixels per millimetre at scale 1
 const GRID = 5;         // grid / snap step in mm
 const PHASES = ["A", "B", "C"];
 const PHASE_COLOR = { A: "#d65f5f", B: "#5f9ed6", C: "#5fd68a" };
-const PASSIVE_COLOR = "#9aa0a6";   // group=null: passive enclosure / divider
+const PASSIVE_COLOR = "#9aa0a6";   // passive bonded (earthed, V̇/L=0)
+const FLOAT_COLOR = "#b39ddb";     // passive floating (isolated, net current=0)
 const colorFor = (g) => (g == null ? PASSIVE_COLOR : (PHASE_COLOR[g] || "#888"));
+const nodeColor = (c) => (c.group == null ? (c.floating ? FLOAT_COLOR : PASSIVE_COLOR)
+                                          : (PHASE_COLOR[c.group] || "#888"));
 const MAT = {
   Copper: { name: "copper", sigma: 5.8e7, mu_r: 1.0 },
   Aluminium: { name: "aluminium", sigma: 3.5e7, mu_r: 1.0 },
@@ -79,7 +82,7 @@ stage.on("dragmove dragend", (e) => { if (e.target === stage) drawGrid(); });
 // ---- model <-> Konva ------------------------------------------------------
 function makeNode(c) {
   const common = { x: c.x, y: c.y, rotation: c.rot, draggable: true,
-                   fill: colorFor(c.group), stroke: "#222", strokeWidth: 0.4 };
+                   fill: nodeColor(c), stroke: "#222", strokeWidth: 0.4 };
   let node;
   if (c.type === "rect")
     node = new Konva.Rect({ ...common, width: c.w, height: c.h, offsetX: c.w / 2, offsetY: c.h / 2 });
@@ -352,39 +355,48 @@ function fillProps(c) {
   $("pH").value = c.h;
   $("pHlabel").parentElement.style.display = c.type === "rect" ? "" : "none";
   $("pX").value = c.x; $("pY").value = c.y; $("pRot").value = c.rot;
-  $("pPhase").value = c.group == null ? "P" : c.group; $("pMat").value = c.material;
+  $("pPhase").value = c.group == null ? (c.floating ? "F" : "P") : c.group; $("pMat").value = c.material;
   // size/position are per-shape (edit a group's pieces via isolation); rotation
   // works on a group too — it spins the whole busbar to the typed angle.
   for (const id of ["pW", "pH", "pX", "pY"]) $(id).disabled = !single;
   $("pRot").disabled = false;
 }
-function readProps() {
+// doGeom: only re-apply geometry when a geometry field changed — editing phase/
+// material must NOT re-snap a sub-grid wall thickness (snap(3mm)->5mm) etc.
+function readProps(doGeom) {
   const c = selected; if (!c) return;
   const single = selGroup.length <= 1;
-  if (single) {   // geometry applies to the one shape
-    if (c.type === "rect") { c.w = snap(+$("pW").value); c.h = snap(+$("pH").value); }
-    else c.r = snap(+$("pW").value);
-    c.x = snap(+$("pX").value); c.y = snap(+$("pY").value); c.rot = +$("pRot").value;
-    const n = c.node;
-    n.x(c.x); n.y(c.y); n.rotation(c.rot);
-    if (c.type === "rect") { n.width(c.w); n.height(c.h); n.offset({ x: c.w / 2, y: c.h / 2 }); }
-    else n.radius(c.r);
-  } else {        // group: rotate the whole busbar to the typed angle (about its centroid)
-    const delta = (+$("pRot").value) - c.rot;
-    if (delta) rotateGroup(delta);
+  if (doGeom) {
+    if (single) {   // geometry applies to the one shape
+      if (c.type === "rect") { c.w = snap(+$("pW").value); c.h = snap(+$("pH").value); }
+      else c.r = snap(+$("pW").value);
+      c.x = snap(+$("pX").value); c.y = snap(+$("pY").value); c.rot = +$("pRot").value;
+      const n = c.node;
+      n.x(c.x); n.y(c.y); n.rotation(c.rot);
+      if (c.type === "rect") { n.width(c.w); n.height(c.h); n.offset({ x: c.w / 2, y: c.h / 2 }); }
+      else n.radius(c.r);
+    } else {        // group: rotate the whole busbar to the typed angle (about its centroid)
+      const delta = (+$("pRot").value) - c.rot;
+      if (delta) rotateGroup(delta);
+    }
   }
-  // phase + material apply to the whole busbar ("P" = passive enclosure -> null)
-  const phase = $("pPhase").value === "P" ? null : $("pPhase").value;
+  // phase + material apply to the whole busbar. "P"/"F" = passive (group null);
+  // "F" additionally floats (net current forced to 0); "P" is bonded (V̇/L=0).
+  const pv = $("pPhase").value;
+  const phase = (pv === "P" || pv === "F") ? null : pv;
+  const floating = pv === "F";
   const material = $("pMat").value;
   for (const m of selGroup) {
-    m.group = phase; m.material = material;
-    m.node.fill(colorFor(phase));
+    m.group = phase; m.material = material; m.floating = floating;
+    m.node.fill(nodeColor(m));
   }
   layer.batchDraw();
   updateAreas();
 }
-["pW", "pH", "pX", "pY", "pRot", "pPhase", "pMat"].forEach((id) =>
-  $(id).addEventListener("input", readProps));
+["pW", "pH", "pX", "pY", "pRot"].forEach((id) =>
+  $(id).addEventListener("input", () => readProps(true)));
+["pPhase", "pMat"].forEach((id) =>
+  $(id).addEventListener("input", () => readProps(false)));
 
 $("snapToggle").addEventListener("change", (e) => {
   snapOn = e.target.checked;
@@ -409,6 +421,7 @@ function toSceneDict() {
         : { type: "circle", radius: c.r / 1000 },
       placement: [c.x / 1000, c.y / 1000, c.rot],
       material: MAT[c.material], group: c.group, busbar: c.busbar,
+      floating: !!c.floating,
     })),
   };
 }
@@ -425,7 +438,8 @@ function loadSceneDict(d) {
     const c = { id: uid, name: cd.name, type: s.type === "circle" ? "circle" : "rect",
       w: (s.width || 0) * 1000, h: (s.height || 0) * 1000, r: (s.radius || 0) * 1000,
       x: cd.placement[0] * 1000, y: cd.placement[1] * 1000, rot: cd.placement[2],
-      group: cd.group ?? null, material: matName(cd.material), busbar: cd.busbar || ("bb" + uid) };
+      group: cd.group ?? null, floating: !!cd.floating,
+      material: matName(cd.material), busbar: cd.busbar || ("bb" + uid) };
     uid++; conductors.push(c); makeNode(c);
   }
   layer.batchDraw();
@@ -532,7 +546,7 @@ function fillResults(data) {
   for (const c of data.conductors) {
     const tr2 = document.createElement("tr");
     const share = c.share == null ? "-" : (c.share * 100).toFixed(0) + "%";
-    const grp = c.group == null ? "encl" : c.group;   // passive enclosure / divider
+    const grp = c.group == null ? "encl" : (c.group === "float" ? "float" : c.group);   // passive
     tr2.innerHTML = `<td>${grp}</td><td>${c.I.toFixed(0)}</td><td>${share}</td><td>${c.loss.toPrecision(3)}</td>`;
     tb.appendChild(tr2);
   }
