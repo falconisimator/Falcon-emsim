@@ -261,7 +261,7 @@ function finishWall(close) {
     if (!pts.length || pts[pts.length - 1].x !== p.x || pts[pts.length - 1].y !== p.y) pts.push(p);
   exitWallMode();
   if (pts.length < 2) return;
-  const t = Math.max(GRID / 5, +$("wallT").value || 3), material = $("wallMat").value;
+  const t = Math.max(GRID / 5, +$("wallT").value || 3), material = "Steel";  // retag in the panel
   const bb = "bb" + uid++;
   const segs = [];
   for (let i = 0; i < pts.length - 1; i++) segs.push([pts[i], pts[i + 1]]);
