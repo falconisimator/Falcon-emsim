@@ -9,11 +9,19 @@ const FLOAT_COLOR = "#b39ddb";     // passive floating (isolated, net current=0)
 const colorFor = (g) => (g == null ? PASSIVE_COLOR : (PHASE_COLOR[g] || "#888"));
 const nodeColor = (c) => (c.group == null ? (c.floating ? FLOAT_COLOR : PASSIVE_COLOR)
                                           : (PHASE_COLOR[c.group] || "#888"));
+// fill + "off" styling: Air items render faint & dashed and are excluded from solve
+function styleNode(c) {
+  const air = c.material === "Air";
+  c.node.fill(nodeColor(c));
+  c.node.opacity(air ? 0.3 : 1);
+  c.node.dash(air ? [4, 4] : []);
+}
 const MAT = {
   Copper: { name: "copper", sigma: 5.8e7, mu_r: 1.0 },
   Aluminium: { name: "aluminium", sigma: 3.5e7, mu_r: 1.0 },
   Steel: { name: "steel", sigma: 1.0e7, mu_r: 200.0 },
   Stainless: { name: "stainless", sigma: 1.4e6, mu_r: 1.0 },
+  Air: { name: "air", sigma: 0.0, mu_r: 1.0 },   // "off" — excluded from the solve
 };
 const ROT_SNAPS = [0, 15, 30, 45, 60, 75, 90, 105, 120, 135, 150, 165, 180,
                    -15, -30, -45, -60, -75, -90, -105, -120, -135, -150, -165];
@@ -125,6 +133,7 @@ function makeNode(c) {
   });
   c.node = node;
   layer.add(node);
+  styleNode(c);   // apply Air faint/dashed styling if needed
   return node;
 }
 // commit a node's transform (scale folded into size, rotation, position) into
@@ -172,7 +181,7 @@ function shapeAreaMM2(c) {
 function updateAreas() {
   const a = {};
   for (const c of conductors) {
-    if (c.group == null) continue;
+    if (c.group == null || c.material === "Air") continue;   // skip passive & off items
     a[c.group] = (a[c.group] || 0) + shapeAreaMM2(c);
   }
   const parts = Object.keys(a).sort().map((g) => `${g}: ${a[g].toFixed(0)}`);
@@ -388,7 +397,7 @@ function readProps(doGeom) {
   const material = $("pMat").value;
   for (const m of selGroup) {
     m.group = phase; m.material = material; m.floating = floating;
-    m.node.fill(nodeColor(m));
+    styleNode(m);
   }
   layer.batchDraw();
   updateAreas();
@@ -397,6 +406,20 @@ function readProps(doGeom) {
   $(id).addEventListener("input", () => readProps(true)));
 ["pPhase", "pMat"].forEach((id) =>
   $(id).addEventListener("input", () => readProps(false)));
+
+// toggle the selected busbar on/off by swapping its material to/from Air,
+// remembering the previous material so it restores exactly.
+function toggleAir() {
+  if (!selGroup.length) return;
+  const off = selGroup.some((c) => c.material !== "Air");   // any live -> turn all off
+  for (const c of selGroup) {
+    if (off) { c._prevMat = c.material; c.material = "Air"; }
+    else { c.material = c._prevMat || "Copper"; }
+    styleNode(c);
+  }
+  if (selected) fillProps(selected);
+  layer.batchDraw(); updateAreas();
+}
 
 $("snapToggle").addEventListener("change", (e) => {
   snapOn = e.target.checked;
@@ -408,13 +431,14 @@ $("meshScale").addEventListener("input", (e) => {
 });
 
 // ---- scene serialisation (io format, metres) ------------------------------
-function toSceneDict() {
+function toSceneDict(skipAir) {
+  const cs = skipAir ? conductors.filter((c) => c.material !== "Air") : conductors;
   return {
     format: 1, frequency: +$("freq").value, three_phase: $("threephase").checked,
     line_current: +$("current").value, boundary: "dirichlet", order: 1,
     domain_radius: 0, lc_surface: 0, lc_far: 0, group_currents: {},
     mesh_scale: +$("meshScale").value,
-    conductors: conductors.map((c) => ({
+    conductors: cs.map((c) => ({
       name: c.name,
       shape: c.type === "rect"
         ? { type: "rect", width: c.w / 1000, height: c.h / 1000 }
@@ -432,7 +456,7 @@ function loadSceneDict(d) {
   $("freq").value = d.frequency; $("threephase").checked = d.three_phase;
   $("current").value = d.line_current;
   const matName = (m) => ({ copper: "Copper", aluminium: "Aluminium", steel: "Steel",
-                            stainless: "Stainless" }[m.name] || "Copper");
+                            stainless: "Stainless", air: "Air" }[m.name] || "Copper");
   for (const cd of d.conductors) {
     const s = cd.shape;
     const c = { id: uid, name: cd.name, type: s.type === "circle" ? "circle" : "rect",
@@ -497,6 +521,9 @@ document.addEventListener("keydown", (e) => {
   if (!typing && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === "r" && selGroup.length) {
     rotateGroup(e.shiftKey ? -15 : 15); e.preventDefault();   // quick 15° nudge
   }
+  if (!typing && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === "h" && selGroup.length) {
+    toggleAir(); e.preventDefault();   // toggle selection off/on (material <-> Air)
+  }
 });
 
 // ---- field view (large overlay) ------------------------------------------
@@ -524,12 +551,14 @@ $("loadFile").onchange = (e) => {
 // progress bar shown while booting and while a (background) solve runs
 EM._onProgress = (text) => { $("status").textContent = text; };
 $("solve").onclick = async () => {
-  if (!EM.ready || !conductors.length) return;
+  if (!EM.ready) return;
+  const active = conductors.filter((c) => c.material !== "Air");
+  if (!active.length) { $("status").textContent = "Add at least one non-air conductor."; return; }
   $("status").textContent = "Meshing + solving (in-browser)…";
   $("progress").hidden = false;        // the editor stays interactive meanwhile
   try {
     const t0 = performance.now();
-    const data = await EM.solve(toSceneDict());   // runs in the worker, non-blocking
+    const data = await EM.solve(toSceneDict(true));   // skip Air items; runs in the worker
     const ms = (performance.now() - t0).toFixed(0);
     $("resultsBox").hidden = false;
     fillResults(data);
