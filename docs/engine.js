@@ -72,48 +72,13 @@ EM.solveThermal = function (params) {
     const data = JSON.parse(json);
     if (data.error) throw new Error(data.error);
     data.T = Float64Array.from(data.T);
+    if (data.vair) data.vair = Float64Array.from(data.vair);
     EM._thermal = data;
     return data;
   });
 };
 
-// render the steady temperature field on the solids (IR-style inferno colormap)
-EM.drawThermal = function () {
-  const d = EM._data, th = EM._thermal, cv = document.getElementById("thermalCanvas");
-  if (!cv || !d || !th) return;
-  const W = (cv.width = cv.clientWidth), H = (cv.height = cv.clientHeight);
-  const ctx = cv.getContext("2d");
-  ctx.clearRect(0, 0, W, H);
-  const ext = d.extent, sc = 0.92 * Math.min(W, H) / (2 * ext);
-  const X = (x) => W / 2 + x * sc, Y = (y) => H / 2 + y * sc;
-  const n = d.tris, nodes = d.nodes, T = th.T, region = d.region;
-  const tmin = th.Tamb, tmax = Math.max(th.Tmax, tmin + 1e-3);
-  const colorOf = (t) => inferno((t - tmin) / (tmax - tmin));
-  for (let e = 0; e < n.length; e += 3) {
-    const t = e / 3; if (region[t] < 10) continue;     // conductors only; air stays blank
-    const i0 = n[e], i1 = n[e + 1], i2 = n[e + 2];
-    const x0 = X(nodes[i0 * 2]), y0 = Y(nodes[i0 * 2 + 1]);
-    const x1 = X(nodes[i1 * 2]), y1 = Y(nodes[i1 * 2 + 1]);
-    const x2 = X(nodes[i2 * 2]), y2 = Y(nodes[i2 * 2 + 1]);
-    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.lineTo(x2, y2); ctx.closePath();
-    fillGouraud(ctx, x0, y0, x1, y1, x2, y2, T[i0], T[i1], T[i2], colorOf);
-  }
-  ctx.strokeStyle = "rgba(15,15,15,0.9)"; ctx.lineWidth = 1.3; ctx.beginPath();
-  for (const [a, b] of EM._edges || []) {
-    ctx.moveTo(X(nodes[a * 2]), Y(nodes[a * 2 + 1])); ctx.lineTo(X(nodes[b * 2]), Y(nodes[b * 2 + 1]));
-  }
-  ctx.stroke();
-  // inter-busbar IR rays (opacity & width ~ radiative flux), if enabled
-  if (EM._showIR !== false && th.ir_lines && th.ir_lines.length) {
-    const wmax = th.ir_wmax || 1;
-    for (const [x1, y1, x2, y2, w] of th.ir_lines) {
-      const f = w / wmax;
-      ctx.strokeStyle = `rgba(255,90,30,${Math.min(0.7, 0.08 + 0.5 * f)})`;
-      ctx.lineWidth = 0.2 + 0.7 * f;
-      ctx.beginPath(); ctx.moveTo(X(x1), Y(y1)); ctx.lineTo(X(x2), Y(y2)); ctx.stroke();
-    }
-  }
-  // colorbar (°C)
+function _tbar(ctx, W, H, vmax, vmin, unit, fmt) {   // °C / m/s colorbar
   const bw = 16, bx = W - 70, by = 26, bh = Math.max(40, H - 70);
   for (let i = 0; i < bh; i++) {
     const col = inferno(1 - i / bh);
@@ -122,9 +87,69 @@ EM.drawThermal = function () {
   ctx.strokeStyle = "#333"; ctx.lineWidth = 1; ctx.strokeRect(bx + 0.5, by + 0.5, bw, bh);
   ctx.fillStyle = "#222"; ctx.font = "11px system-ui, sans-serif";
   ctx.textAlign = "left"; ctx.textBaseline = "middle";
-  for (const [yy, v] of [[by, tmax], [by + bh / 2, (tmax + tmin) / 2], [by + bh, tmin]])
-    ctx.fillText(v.toFixed(0), bx + bw + 5, yy);
-  ctx.textBaseline = "alphabetic"; ctx.fillText("°C", bx - 2, by - 8);
+  for (const [yy, v] of [[by, vmax], [by + bh / 2, (vmax + vmin) / 2], [by + bh, vmin]])
+    ctx.fillText(fmt(v), bx + bw + 5, yy);
+  ctx.textBaseline = "alphabetic"; ctx.fillText(unit, bx - 2, by - 8);
+}
+
+// Thermal views: 'temp' (T on solids), 'air' (axial airspeed on the air),
+// 'ir' (inter-busbar IR rays over faint geometry).
+EM.drawThermal = function () {
+  const d = EM._data, th = EM._thermal, cv = document.getElementById("thermalCanvas");
+  if (!cv || !d || !th) return;
+  const W = (cv.width = cv.clientWidth), H = (cv.height = cv.clientHeight);
+  const ctx = cv.getContext("2d");
+  ctx.clearRect(0, 0, W, H);
+  const ext = d.extent, sc = 0.92 * Math.min(W, H) / (2 * ext);
+  const X = (x) => W / 2 + x * sc, Y = (y) => H / 2 + y * sc;
+  const n = d.tris, nodes = d.nodes, region = d.region;
+  const mode = EM._thermalView || "temp";
+  const tri = (e) => [n[e], n[e + 1], n[e + 2]];
+  const fill = (e, val, colorOf) => {
+    const [i0, i1, i2] = tri(e);
+    const x0 = X(nodes[i0 * 2]), y0 = Y(nodes[i0 * 2 + 1]);
+    const x1 = X(nodes[i1 * 2]), y1 = Y(nodes[i1 * 2 + 1]);
+    const x2 = X(nodes[i2 * 2]), y2 = Y(nodes[i2 * 2 + 1]);
+    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.lineTo(x2, y2); ctx.closePath();
+    if (colorOf) fillGouraud(ctx, x0, y0, x1, y1, x2, y2, val[i0], val[i1], val[i2], colorOf);
+    else ctx.fill();
+  };
+
+  if (mode === "air") {
+    const v = th.vair, vmax = Math.max(th.vmax, 1e-6);
+    const colorOf = (s) => inferno(s / vmax);
+    for (let e = 0; e < n.length; e += 3) {
+      if (region[e / 3] >= 10) { ctx.fillStyle = "#3a3d42"; fill(e, null, null); }   // solids: grey
+      else fill(e, v, colorOf);                                                       // air: speed
+    }
+  } else if (mode === "temp") {
+    const tmin = th.Tamb, tmax = Math.max(th.Tmax, tmin + 1e-3);
+    const colorOf = (t) => inferno((t - tmin) / (tmax - tmin));
+    for (let e = 0; e < n.length; e += 3) if (region[e / 3] >= 10) fill(e, th.T, colorOf);
+  } else { // ir: faint solids so the rays read clearly
+    ctx.fillStyle = "#e6e6e6";
+    for (let e = 0; e < n.length; e += 3) if (region[e / 3] >= 10) fill(e, null, null);
+  }
+
+  // conductor outlines
+  ctx.strokeStyle = "rgba(15,15,15,0.9)"; ctx.lineWidth = 1.3; ctx.beginPath();
+  for (const [a, b] of EM._edges || []) {
+    ctx.moveTo(X(nodes[a * 2]), Y(nodes[a * 2 + 1])); ctx.lineTo(X(nodes[b * 2]), Y(nodes[b * 2 + 1]));
+  }
+  ctx.stroke();
+
+  if (mode === "ir" && th.ir_lines && th.ir_lines.length) {
+    const wmax = th.ir_wmax || 1;
+    for (const [x1, y1, x2, y2, w] of th.ir_lines) {
+      const f = w / wmax;
+      ctx.strokeStyle = `rgba(255,80,20,${Math.min(0.85, 0.15 + 0.6 * f)})`;
+      ctx.lineWidth = 0.3 + 1.2 * f;
+      ctx.beginPath(); ctx.moveTo(X(x1), Y(y1)); ctx.lineTo(X(x2), Y(y2)); ctx.stroke();
+    }
+  }
+
+  if (mode === "air") _tbar(ctx, W, H, th.vmax, 0, "m/s", (x) => x.toFixed(2));
+  else if (mode === "temp") _tbar(ctx, W, H, Math.max(th.Tmax, th.Tamb + 1e-3), th.Tamb, "°C", (x) => x.toFixed(0));
 };
 
 // edges shared by two triangles of different region = conductor / material outline

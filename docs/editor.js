@@ -581,12 +581,15 @@ function fillThermalSummary() {
     h += `Airflow over ${th.duct_len.toFixed(0)} m: air ${th.Tamb.toFixed(0)} → ${th.air_out.toFixed(1)} °C, `
        + `busbar max ${th.Tmax.toFixed(1)} (inlet) → ${th.bar_max_out.toFixed(1)} °C (outlet)<br>`;
   }
+  if (th.vmax > 0) {
+    h += `Air: peak ${th.vmax.toFixed(2)} m/s, ΔP ${th.dP.toFixed(3)} Pa over ${th.duct_len.toFixed(0)} m<br>`;
+  }
   h += th.conductors.map((c) => `${c.name}: ${c.Tmax.toFixed(1)}°`).join(" · ");
   const el = $("thermalSummary"); el.innerHTML = h; el.style.display = "block";
 }
 $("computeThermal").onclick = computeThermal;
-$("showIR").addEventListener("change", (e) => {
-  EM._showIR = e.target.checked;
+$("thermalField").addEventListener("change", (e) => {
+  EM._thermalView = e.target.value;
   if (EM._thermal) EM.drawThermal();
 });
 // keep the in-view buttons working, now as view switches

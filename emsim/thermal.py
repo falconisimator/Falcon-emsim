@@ -31,6 +31,7 @@ NU_AIR = 1.57e-5            # air kinematic viscosity, m^2/s
 PR_AIR = 0.71              # air Prandtl number
 RHO_AIR = 1.16             # air density, kg/m^3 (~300 K)
 CP_AIR = 1005.0            # air specific heat, J/kg/K
+MU_AIR = 1.85e-5           # air dynamic viscosity, Pa*s (~300 K)
 DUCT_LEN = 1.0             # axial length the air flows over, m (matches the 3D view)
 H_NATURAL = 6.0            # natural-convection floor, W/m^2/K
 T_REF = 20.0              # temperature the EM conductivities were taken at, deg C
@@ -84,6 +85,50 @@ def _view_factors(mid, nrm, Le, Pa, Pb):
         F[cross] = 0.0
     skyfrac = np.clip(1.0 - F.sum(axis=1), 0.0, 1.0)
     return F, skyfrac
+
+
+def _airflow_unit(nodes, tris, region, cond_tags, solid_nodes):
+    """Fully-developed laminar axial duct flow: solve nabla^2 w = -1 on the air
+    region with no-slip (w=0) on conductor surfaces and the outer boundary. The
+    unit profile w_hat is geometry-only (cached); actual velocity scales to the
+    nominal mean. Returns (w_full[Nn], mean_w_hat) ; w_full is 0 outside air."""
+    Nn = nodes.shape[0]
+    air = ~np.isin(region, list(cond_tags))
+    ae = tris[air]
+    x, y = nodes[ae, 0], nodes[ae, 1]
+    det = (x[:, 1] - x[:, 0]) * (y[:, 2] - y[:, 0]) - (x[:, 2] - x[:, 0]) * (y[:, 1] - y[:, 0])
+    A2 = np.abs(det) / 2.0
+    b = np.stack([y[:, 1] - y[:, 2], y[:, 2] - y[:, 0], y[:, 0] - y[:, 1]], axis=1) / det[:, None]
+    c = np.stack([x[:, 2] - x[:, 1], x[:, 0] - x[:, 2], x[:, 1] - x[:, 0]], axis=1) / det[:, None]
+    anodes = np.unique(ae)
+    ramap = np.full(Nn, -1, dtype=np.int64)
+    ramap[anodes] = np.arange(anodes.size)
+    na = anodes.size
+    ei = ramap[ae]
+    ke = A2[:, None, None] * (b[:, :, None] * b[:, None, :] + c[:, :, None] * c[:, None, :])
+    R = np.broadcast_to(ei[:, :, None], (ei.shape[0], 3, 3))
+    C = np.broadcast_to(ei[:, None, :], (ei.shape[0], 3, 3))
+    K = sp.coo_matrix((ke.ravel(), (R.ravel(), C.ravel())), shape=(na, na)).tocsr()
+    f = np.zeros(na)
+    np.add.at(f, ei.ravel(), np.repeat(A2 / 3.0, 3))
+    # Dirichlet w=0: conductor-interface nodes + outer-boundary nodes
+    rad = np.hypot(nodes[:, 0], nodes[:, 1])
+    rmax = rad[anodes].max()
+    dirich = np.zeros(Nn, dtype=bool)
+    dirich[np.intersect1d(anodes, solid_nodes)] = True
+    dirich[anodes[rad[anodes] >= 0.999 * rmax]] = True
+    fa = ramap[anodes[~dirich[anodes]]]                  # free air-node locals
+    w = np.zeros(na)
+    if fa.size:
+        Kff = K[fa][:, fa]
+        Mj = sp.diags(1.0 / Kff.diagonal())
+        wf, _ = spla.cg(Kff, f[fa], rtol=1e-8, atol=1e-12, maxiter=5000, M=Mj)
+        w[fa] = wf
+    welem = w[ei].mean(axis=1)
+    mean_w = float((welem * A2).sum() / A2.sum()) if A2.sum() > 0 else 0.0
+    w_full = np.zeros(Nn)
+    w_full[anodes] = w
+    return w_full, mean_w
 
 
 def solve_thermal(state: dict, u: float, t_amb: float, max_iter: int = 8) -> dict:
@@ -225,6 +270,21 @@ def solve_thermal(state: dict, u: float, t_amb: float, max_iter: int = 8) -> dic
     dT_air = min(dT_air, max(0.0, float(T.max()) - t_amb))   # air can't exceed the surface
     bar_max = float(T.max())
 
+    # axial airspeed field (Poisson duct flow); unit profile is geometry-only so
+    # cache it and just scale to the nominal mean velocity u. dP = fan/pumping drop.
+    air = state.get("_air")
+    if air is None:
+        air = _airflow_unit(nodes, tris, region, cond_tags, used)
+        state["_air"] = air
+    w_full, mean_w = air
+    if mean_w > 0 and u > 0:
+        vair = (u / mean_w) * w_full
+        dP = MU_AIR * u * DUCT_LEN / mean_w
+    else:
+        vair = np.zeros(Nn)
+        dP = 0.0
+    vmax = float(vair.max())
+
     # net radiative power transmitted between busbars (W/m). Q_ij = eps_i eps_j
     # sigma Le_i F_ij (Ti^4 - Tj^4); aggregate by surface label.
     Qfull = eps_e[:, None] * eps_e[None, :] * SIGMA_SB * F * (t4[:, None] - t4[None, :]) * Le[:, None]
@@ -278,4 +338,7 @@ def solve_thermal(state: dict, u: float, t_amb: float, max_iter: int = 8) -> dic
         "dT_air": float(dT_air),                 # air rise inlet->outlet over the length
         "air_out": float(t_amb + dT_air),
         "bar_max_out": float(bar_max + dT_air),  # outlet (hot end) busbar max
+        "vair": vair.tolist(),                   # per-node axial airspeed, m/s
+        "vmax": vmax,
+        "dP": float(dP),                         # pressure drop over the length, Pa
     }
