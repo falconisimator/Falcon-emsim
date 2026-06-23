@@ -29,6 +29,9 @@ SIGMA_SB = 5.670e-8          # Stefan-Boltzmann, W/m^2/K^4
 K_AIR = 0.026               # air conductivity, W/m/K (~300 K)
 NU_AIR = 1.57e-5            # air kinematic viscosity, m^2/s
 PR_AIR = 0.71              # air Prandtl number
+RHO_AIR = 1.16             # air density, kg/m^3 (~300 K)
+CP_AIR = 1005.0            # air specific heat, J/kg/K
+DUCT_LEN = 1.0             # axial length the air flows over, m (matches the 3D view)
 H_NATURAL = 6.0            # natural-convection floor, W/m^2/K
 T_REF = 20.0              # temperature the EM conductivities were taken at, deg C
 
@@ -211,6 +214,17 @@ def solve_thermal(state: dict, u: float, t_amb: float, max_iter: int = 8) -> dic
     telem = T[eidx].mean(axis=1)
     p_total = float(np.sum(sploss * A * (1.0 + alel * (telem - T_REF))))
 
+    # axial airflow gradient: the cooling air warms as it flows over the length.
+    # mdot = rho*u*A_flow, A_flow ~ the in-plane air gap (bbox of solids minus the
+    # conductor cross-section); dT_air = P_conv*L/(mdot*cp). Tight-duct estimate.
+    sx, sy = nodes[used, 0], nodes[used, 1]
+    a_box = (sx.max() - sx.min()) * (sy.max() - sy.min())
+    a_flow = max(3.0 * a_box - float(A.sum()), 1e-5)   # loose duct ~3x the bar bbox
+    mdot = RHO_AIR * u * a_flow
+    dT_air = (p_conv * DUCT_LEN / (mdot * CP_AIR)) if mdot > 0 else 0.0
+    dT_air = min(dT_air, max(0.0, float(T.max()) - t_amb))   # air can't exceed the surface
+    bar_max = float(T.max())
+
     # net radiative power transmitted between busbars (W/m). Q_ij = eps_i eps_j
     # sigma Le_i F_ij (Ti^4 - Tj^4); aggregate by surface label.
     Qfull = eps_e[:, None] * eps_e[None, :] * SIGMA_SB * F * (t4[:, None] - t4[None, :]) * Le[:, None]
@@ -260,4 +274,8 @@ def solve_thermal(state: dict, u: float, t_amb: float, max_iter: int = 8) -> dic
         "ir_lines": ir_lines,
         "ir_wmax": ir_wmax,
         "conductors": conductors,
+        "duct_len": DUCT_LEN,
+        "dT_air": float(dT_air),                 # air rise inlet->outlet over the length
+        "air_out": float(t_amb + dT_air),
+        "bar_max_out": float(bar_max + dT_air),  # outlet (hot end) busbar max
     }

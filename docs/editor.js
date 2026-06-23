@@ -577,6 +577,10 @@ function fillThermalSummary() {
     h += `IR between busbars: ` + th.ir_pairs.slice(0, 5)
       .map((p) => `${p.from}→${p.to} ${p.watts.toFixed(2)} W/m`).join(", ") + `<br>`;
   }
+  if (th.dT_air > 0.05) {
+    h += `Airflow over ${th.duct_len.toFixed(0)} m: air ${th.Tamb.toFixed(0)} → ${th.air_out.toFixed(1)} °C, `
+       + `busbar max ${th.Tmax.toFixed(1)} (inlet) → ${th.bar_max_out.toFixed(1)} °C (outlet)<br>`;
+  }
   h += th.conductors.map((c) => `${c.name}: ${c.Tmax.toFixed(1)}°`).join(" · ");
   const el = $("thermalSummary"); el.innerHTML = h; el.style.display = "block";
 }
