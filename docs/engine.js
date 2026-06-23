@@ -103,6 +103,16 @@ EM.drawThermal = function () {
     ctx.moveTo(X(nodes[a * 2]), Y(nodes[a * 2 + 1])); ctx.lineTo(X(nodes[b * 2]), Y(nodes[b * 2 + 1]));
   }
   ctx.stroke();
+  // inter-busbar IR rays (opacity & width ~ radiative flux), if enabled
+  if (EM._showIR !== false && th.ir_lines && th.ir_lines.length) {
+    const wmax = th.ir_wmax || 1;
+    for (const [x1, y1, x2, y2, w] of th.ir_lines) {
+      const f = w / wmax;
+      ctx.strokeStyle = `rgba(255,90,30,${Math.min(0.85, 0.12 + 0.7 * f)})`;
+      ctx.lineWidth = 0.4 + 2.2 * f;
+      ctx.beginPath(); ctx.moveTo(X(x1), Y(y1)); ctx.lineTo(X(x2), Y(y2)); ctx.stroke();
+    }
+  }
   // colorbar (°C)
   const bw = 16, bx = W - 70, by = 26, bh = Math.max(40, H - 70);
   for (let i = 0; i < bh; i++) {

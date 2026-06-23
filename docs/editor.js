@@ -573,10 +573,18 @@ function fillThermalSummary() {
   let h = `<b>Max ${th.Tmax.toFixed(1)} °C</b> (ambient ${th.Tamb.toFixed(0)} °C, ΔT ${(th.Tmax - th.Tamb).toFixed(1)} K)<br>`;
   h += `Heat ${th.P_total.toFixed(1)} W/m → convection ${th.P_conv.toFixed(1)} (${pct(th.P_conv)}%), `
      + `radiation ${th.P_rad.toFixed(1)} (${pct(th.P_rad)}%)<br>`;
+  if (th.ir_pairs && th.ir_pairs.length) {
+    h += `IR between busbars: ` + th.ir_pairs.slice(0, 5)
+      .map((p) => `${p.from}→${p.to} ${p.watts.toFixed(2)} W/m`).join(", ") + `<br>`;
+  }
   h += th.conductors.map((c) => `${c.name}: ${c.Tmax.toFixed(1)}°`).join(" · ");
   const el = $("thermalSummary"); el.innerHTML = h; el.style.display = "block";
 }
 $("computeThermal").onclick = computeThermal;
+$("showIR").addEventListener("change", (e) => {
+  EM._showIR = e.target.checked;
+  if (EM._thermal) EM.drawThermal();
+});
 // keep the in-view buttons working, now as view switches
 function showFieldView() { setView("em"); }
 function hideFieldView() { setView("designer"); }

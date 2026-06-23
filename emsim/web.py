@@ -135,7 +135,7 @@ def solve_scene(scene_dict) -> str:
         region_props[c.region_tag] = {
             "k": tp["k"], "alpha": tp["alpha"], "eps": tp["eps"],
             "Lchar": max(1e-3, c.shape.area() ** 0.5),   # convection length scale
-            "name": c.name, "group": c.group,
+            "name": c.name, "group": c.group, "busbar": c.busbar,
         }
     _LAST.clear()
     _LAST.update({

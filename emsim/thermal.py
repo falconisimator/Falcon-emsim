@@ -51,6 +51,38 @@ def _forced_h(u: float, length: float) -> float:
     return nu * K_AIR / length
 
 
+def _view_factors(mid, nrm, Le, Pa, Pb):
+    """2D diffuse view factors F[i,j] between surface segments (crossed-strings
+    differential form) with line-of-sight occlusion. F[i,j] = fraction of i's
+    hemisphere subtended by j; rows sum to <=1 (rest = sky). O(N^2) + an
+    occluder loop; geometry-only so the caller caches it across re-solves."""
+    N = len(mid)
+    r = mid[None, :, :] - mid[:, None, :]          # i -> j
+    dist = np.hypot(r[:, :, 0], r[:, :, 1]) + 1e-12
+    ci = (r[:, :, 0] * nrm[:, None, 0] + r[:, :, 1] * nrm[:, None, 1]) / dist
+    cj = (-r[:, :, 0] * nrm[None, :, 0] - r[:, :, 1] * nrm[None, :, 1]) / dist
+    F = np.clip(ci, 0, None) * np.clip(cj, 0, None) / (2.0 * dist) * Le[None, :]
+    np.fill_diagonal(F, 0.0)
+    # occlusion: zero F[i,j] if the ray mid_i->mid_j crosses another segment k
+    Px, Py = mid[:, 0], mid[:, 1]
+    dX, dY = Px[None, :] - Px[:, None], Py[None, :] - Py[:, None]
+    eps = 1e-3                                       # shrink ray off its endpoints
+    P1x, P1y = Px[:, None] + eps * dX, Py[:, None] + eps * dY
+    P2x, P2y = Px[None, :] - eps * dX, Py[None, :] - eps * dY
+    occ = range(N) if N <= 500 else range(0, N, 2)   # subsample occluders if huge
+    for k in occ:
+        ax, ay, bx, by = Pa[k, 0], Pa[k, 1], Pb[k, 0], Pb[k, 1]
+        d1 = (by - ay) * (P1x - ax) - (bx - ax) * (P1y - ay)
+        d2 = (by - ay) * (P2x - ax) - (bx - ax) * (P2y - ay)
+        d3 = (P2y - P1y) * (ax - P1x) - (P2x - P1x) * (ay - P1y)
+        d4 = (P2y - P1y) * (bx - P1x) - (P2x - P1x) * (by - P1y)
+        cross = (d1 * d2 < 0) & (d3 * d4 < 0)
+        cross[k, :] = False; cross[:, k] = False
+        F[cross] = 0.0
+    skyfrac = np.clip(1.0 - F.sum(axis=1), 0.0, 1.0)
+    return F, skyfrac
+
+
 def solve_thermal(state: dict, u: float, t_amb: float, max_iter: int = 8) -> dict:
     """Solve the steady temperature field. ``state`` is cached by emsim.web from
     the last EM solve; ``u`` is the axial airflow (m/s), ``t_amb`` ambient degC."""
@@ -103,21 +135,44 @@ def solve_thermal(state: dict, u: float, t_amb: float, max_iter: int = 8) -> dic
     ra, rb = remap[sa], remap[sb]
     Le = np.hypot(p[sa, 0] - p[sb, 0], p[sa, 1] - p[sb, 1])
     eps_e = np.array([rprops[sreg[o]]["eps"] for o in sowner])
-    hconv_e = np.array([H_NATURAL + _forced_h(u, rprops[sreg[o]]["Lchar"]) for o in sowner])
+    forced_e = np.array([_forced_h(u, rprops[sreg[o]]["Lchar"]) for o in sowner])
+    # per-surface busbar label (group for phases, busbar id for passive metal)
+    def _label(tag):
+        pr = rprops[tag]
+        return pr["group"] if pr.get("group") is not None else pr.get("busbar", "encl")
+    lab_e = np.array([_label(sreg[o]) for o in sowner], dtype=object)
 
+    # radiation view factors (geometry only) -> cached across airflow/ambient changes
+    vf = state.get("_vf")
+    if vf is None or vf[0].shape[0] != len(sa):
+        Pa, Pb = nodes[sa], nodes[sb]
+        mid = 0.5 * (Pa + Pb)
+        dd = Pb - Pa
+        nrm = np.stack([dd[:, 1], -dd[:, 0]], axis=1)
+        nrm /= (np.hypot(nrm[:, 0], nrm[:, 1])[:, None] + 1e-30)
+        third = se[sowner].sum(axis=1) - sa - sb           # outward = away from element
+        cen = (Pa + Pb + nodes[third]) / 3.0
+        flip = ((mid - cen) * nrm).sum(axis=1) < 0
+        nrm[flip] *= -1.0
+        F, skyfrac = _view_factors(mid, nrm, Le, Pa, Pb)
+        state["_vf"] = vf = (F, skyfrac, mid)
+    F, skyfrac, mid = vf
+
+    # confined surfaces (low sky fraction) lose forced airflow -> natural only
+    hconv_e = H_NATURAL + skyfrac * forced_e
     tak = t_amb + 273.15
+
     T = np.full(Ns, t_amb)
     for _ in range(max_iter):
-        # temperature-corrected heat source (W/m per element -> nodal)
         telem = T[eidx].mean(axis=1)
         qe = sploss * A * (1.0 + alel * (telem - T_REF))
         f = np.zeros(Ns)
         np.add.at(f, eidx.ravel(), np.repeat(qe / 3.0, 3))
 
-        # convection + linearised radiation, each surface edge to ambient
         tedge = 0.5 * (T[ra] + T[rb])
         tk = tedge + 273.15
-        hrad = eps_e * SIGMA_SB * (tk * tk + tak * tak) * (tk + tak)
+        # radiation to AMBIENT is weighted by the sky fraction (rest is exchange)
+        hrad = eps_e * SIGMA_SB * skyfrac * (tk * tk + tak * tak) * (tk + tak)
         h = hconv_e + hrad
         m = h * Le / 6.0
         Kb = sp.coo_matrix(
@@ -128,9 +183,14 @@ def solve_thermal(state: dict, u: float, t_amb: float, max_iter: int = 8) -> dic
         np.add.at(f, ra, fb)
         np.add.at(f, rb, fb)
 
-        # SPD system (conduction + positive convection) -> CG with a Jacobi
-        # preconditioner. Iterative on purpose: SuperLU (splu/spsolve) hangs on
-        # this matrix in Pyodide, and CG is bounded-time regardless.
+        # inter-surface IR exchange (lagged): net flux leaving edge i toward the
+        # bars it sees. q_i = eps_i*sigma*sum_j eps_j F_ij (Ti^4 - Tj^4) [W/m^2].
+        t4 = tk ** 4
+        qx = eps_e * SIGMA_SB * (F * eps_e[None, :] * (t4[:, None] - t4[None, :])).sum(axis=1)
+        fx = qx * Le / 2.0
+        np.add.at(f, ra, -fx)
+        np.add.at(f, rb, -fx)
+
         Amat = (Kc + Kb).tocsr()
         Mj = sp.diags(1.0 / Amat.diagonal())
         Tn, _info = spla.cg(Amat, f, x0=T, rtol=1e-8, atol=1e-10, maxiter=5000, M=Mj)
@@ -139,15 +199,43 @@ def solve_thermal(state: dict, u: float, t_amb: float, max_iter: int = 8) -> dic
             break
         T = Tn
 
-    # final fluxes for the energy split (W/m)
+    # final fluxes / energy split (W/m). Inter-surface exchange nets to ~0
+    # globally, so heat leaves only by convection + radiation-to-ambient.
     tedge = 0.5 * (T[ra] + T[rb])
     tk = tedge + 273.15
-    hrad = eps_e * SIGMA_SB * (tk * tk + tak * tak) * (tk + tak)
+    t4 = tk ** 4
+    hrad = eps_e * SIGMA_SB * skyfrac * (tk * tk + tak * tak) * (tk + tak)
     dT = tedge - t_amb
     p_conv = float(np.sum(hconv_e * dT * Le))
     p_rad = float(np.sum(hrad * dT * Le))
     telem = T[eidx].mean(axis=1)
     p_total = float(np.sum(sploss * A * (1.0 + alel * (telem - T_REF))))
+
+    # net radiative power transmitted between busbars (W/m). Q_ij = eps_i eps_j
+    # sigma Le_i F_ij (Ti^4 - Tj^4); aggregate by surface label.
+    Qfull = eps_e[:, None] * eps_e[None, :] * SIGMA_SB * F * (t4[:, None] - t4[None, :]) * Le[:, None]
+    labels = sorted({str(x) for x in lab_e})
+    lidx = {lb: np.where(lab_e.astype(str) == lb)[0] for lb in labels}
+    ir_pairs = []
+    for i in range(len(labels)):
+        for j in range(i + 1, len(labels)):
+            q = float(Qfull[np.ix_(lidx[labels[i]], lidx[labels[j]])].sum())
+            if abs(q) > 0.02:
+                # report net flow hot -> cold
+                a, b, w = (labels[i], labels[j], q) if q >= 0 else (labels[j], labels[i], -q)
+                ir_pairs.append({"from": a, "to": b, "watts": w})
+    ir_pairs.sort(key=lambda d: -d["watts"])
+
+    # IR "rays" for the view: strongest cross-busbar surface exchanges
+    lab_s = lab_e.astype(str)
+    iu, ju = np.triu_indices(len(sa), k=1)
+    aq = np.abs(Qfull[iu, ju])
+    keep = (aq > 1e-4) & (lab_s[iu] != lab_s[ju])
+    ii, jj, ww = iu[keep], ju[keep], aq[keep]
+    order = np.argsort(-ww)[:300]
+    ir_wmax = float(ww[order[0]]) if order.size else 0.0
+    ir_lines = [[float(mid[i, 0]), float(mid[i, 1]), float(mid[j, 0]), float(mid[j, 1]), float(w)]
+                for i, j, w in zip(ii[order], jj[order], ww[order])]
 
     conductors = []
     for tag, pr in rprops.items():
@@ -168,5 +256,8 @@ def solve_thermal(state: dict, u: float, t_amb: float, max_iter: int = 8) -> dic
         "P_total": p_total,
         "P_conv": p_conv,
         "P_rad": p_rad,
+        "ir_pairs": ir_pairs,
+        "ir_lines": ir_lines,
+        "ir_wmax": ir_wmax,
         "conductors": conductors,
     }
