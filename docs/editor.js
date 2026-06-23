@@ -548,7 +548,7 @@ function setView(v) {
       $("thermalPrereq").textContent = "Solve the EM problem first (Designer → Solve).";
     } else {
       $("thermalEmpty").style.display = "none";
-      if (EM._thermal) requestAnimationFrame(() => { EM.drawThermal(); fillThermalSummary(); });
+      if (EM._thermal) requestAnimationFrame(() => { renderThermal(); fillThermalSummary(); });
       else requestAnimationFrame(() => computeThermal());   // auto-run on first entry
     }
   }
@@ -562,7 +562,7 @@ async function computeThermal() {
   $("thermalStatus").textContent = "solving…";
   try {
     const th = await EM.solveThermal({ airflow: +$("airflow").value, ambient: +$("ambient").value });
-    EM.drawThermal(); fillThermalSummary();
+    renderThermal(); fillThermalSummary();
     $("thermalStatus").textContent = `max ${th.Tmax.toFixed(1)} °C`;
     $("status").textContent = `Thermal: max ${th.Tmax.toFixed(1)} °C, ΔT ${(th.Tmax - th.Tamb).toFixed(1)} K`;
   } catch (err) { $("thermalStatus").textContent = "thermal error: " + err; console.error(err); }
@@ -587,10 +587,83 @@ function fillThermalSummary() {
   h += th.conductors.map((c) => `${c.name}: ${c.Tmax.toFixed(1)}°`).join(" · ");
   const el = $("thermalSummary"); el.innerHTML = h; el.style.display = "block";
 }
+// render the active thermal view (mesh views in engine.js; 3D extrusion here)
+function renderThermal() {
+  if (EM._thermalView === "3d") draw3D();
+  else EM.drawThermal();
+}
+
+// ---- representative pseudo-3D: extrude the cross-section to the 1 m length,
+// colored by the inlet->outlet temperature gradient; drag to rotate. ---------
+EM._3d = { az: 0.6, el: 0.5 };
+function shapeOutline(c) {                       // world-space (mm) cross-section ring
+  let pts;
+  if (c.type === "rect") { const hw = c.w / 2, hh = c.h / 2; pts = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]]; }
+  else { pts = []; for (let i = 0; i < 16; i++) { const a = 2 * Math.PI * i / 16; pts.push([c.r * Math.cos(a), c.r * Math.sin(a)]); } }
+  const th = (c.rot * Math.PI) / 180, cs = Math.cos(th), sn = Math.sin(th);
+  return pts.map(([lx, ly]) => [c.x + cs * lx - sn * ly, c.y + sn * lx + cs * ly]);
+}
+function draw3D() {
+  const th = EM._thermal; if (!th || !conductors.length) return;
+  const cv = $("thermalCanvas"), W = (cv.width = cv.clientWidth), H = (cv.height = cv.clientHeight);
+  const ctx = cv.getContext("2d"); ctx.clearRect(0, 0, W, H);
+  const tmap = {}; th.conductors.forEach((c) => (tmap[c.name] = c.Tmean));
+  const Tmin = th.Tamb, Tmax = Math.max(th.bar_max_out, Tmin + 1e-3), dT = th.dT_air || 0, L = (th.duct_len || 1) * 1000;
+  const live = conductors.filter((c) => c.material !== "Air");
+  let cx = 0, cy = 0; for (const c of live) { cx += c.x; cy += c.y; } cx /= live.length || 1; cy /= live.length || 1;
+  const a = EM._3d.az, e = EM._3d.el, ca = Math.cos(a), sa = Math.sin(a), ce = Math.cos(e), se = Math.sin(e);
+  const proj = (x, y, z) => {                    // mm -> projection plane (centered)
+    const X = x - cx, Y = -(y - cy), Z = z - L / 2;
+    const x1 = X * ca + Z * sa, z1 = -X * sa + Z * ca;
+    return [x1, Y * ce - z1 * se, Y * se + z1 * ce];   // [u, v, depth]
+  };
+  const col = (t) => { const c2 = inferno((t - Tmin) / (Tmax - Tmin)); return `rgb(${c2[0]},${c2[1]},${c2[2]})`; };
+  const faces = [];
+  for (const c of live) {
+    const ring = shapeOutline(c), M = ring.length, T0 = tmap[c.name] != null ? tmap[c.name] : Tmin;
+    for (let i = 0; i < M; i++) {                 // side faces
+      const p = ring[i], q = ring[(i + 1) % M];
+      const f = [proj(p[0], p[1], 0), proj(q[0], q[1], 0), proj(q[0], q[1], L), proj(p[0], p[1], L)];
+      faces.push({ pts: f, depth: (f[0][2] + f[1][2] + f[2][2] + f[3][2]) / 4, fill: col(T0 + dT * 0.5) });
+    }
+    faces.push({ pts: ring.map((p) => proj(p[0], p[1], 0)), depth: proj(c.x, c.y, 0)[2], fill: col(T0) });           // inlet
+    faces.push({ pts: ring.map((p) => proj(p[0], p[1], L)), depth: proj(c.x, c.y, L)[2], fill: col(T0 + dT) });      // outlet
+  }
+  let umin = 1e9, umax = -1e9, vmin = 1e9, vmax = -1e9;
+  for (const f of faces) for (const p of f.pts) { umin = Math.min(umin, p[0]); umax = Math.max(umax, p[0]); vmin = Math.min(vmin, p[1]); vmax = Math.max(vmax, p[1]); }
+  const s = 0.8 * Math.min(W / (umax - umin || 1), H / (vmax - vmin || 1));
+  const ox = W / 2 - s * (umin + umax) / 2, oy = H / 2 - s * (vmin + vmax) / 2;
+  const S = (p) => [ox + s * p[0], oy + s * p[1]];
+  faces.sort((A, B) => A.depth - B.depth);        // far (small depth) first
+  for (const f of faces) {
+    ctx.beginPath(); const p0 = S(f.pts[0]); ctx.moveTo(p0[0], p0[1]);
+    for (let i = 1; i < f.pts.length; i++) { const pp = S(f.pts[i]); ctx.lineTo(pp[0], pp[1]); }
+    ctx.closePath(); ctx.fillStyle = f.fill; ctx.fill();
+    ctx.strokeStyle = "rgba(15,15,15,0.45)"; ctx.lineWidth = 0.6; ctx.stroke();
+  }
+  // length / flow label + colorbar
+  ctx.fillStyle = "#222"; ctx.font = "12px system-ui, sans-serif"; ctx.textAlign = "center";
+  const inP = S(proj(cx, cy, 0)), outP = S(proj(cx, cy, L));
+  ctx.fillText("inlet (cool)", inP[0], inP[1] + 4); ctx.fillText("outlet (hot) →air", outP[0], outP[1] - 6);
+  ctx.textAlign = "left";
+  _tbar(ctx, W, H, Tmax, Tmin, "°C", (x) => x.toFixed(0));
+}
+(function bind3dRotate() {
+  const cv = $("thermalCanvas"); let drag = null;
+  cv.addEventListener("mousedown", (e) => { if (EM._thermalView === "3d") drag = { x: e.clientX, y: e.clientY, az: EM._3d.az, el: EM._3d.el }; });
+  window.addEventListener("mousemove", (e) => {
+    if (!drag) return;
+    EM._3d.az = drag.az + (e.clientX - drag.x) * 0.01;
+    EM._3d.el = Math.max(-1.4, Math.min(1.4, drag.el + (e.clientY - drag.y) * 0.01));
+    draw3D();
+  });
+  window.addEventListener("mouseup", () => { drag = null; });
+})();
+
 $("computeThermal").onclick = computeThermal;
 $("thermalField").addEventListener("change", (e) => {
   EM._thermalView = e.target.value;
-  if (EM._thermal) EM.drawThermal();
+  if (EM._thermal) renderThermal();
 });
 // keep the in-view buttons working, now as view switches
 function showFieldView() { setView("em"); }
@@ -692,7 +765,7 @@ window.addEventListener("resize", () => {
   if (EM._data && document.getElementById("fieldOverlay").style.display === "flex" && !EM._anim)
     EM.drawFrame(0);
   if (EM._thermal && document.getElementById("thermalView").style.display === "flex")
-    EM.drawThermal();
+    renderThermal();
 });
 recenter();
 defaultScene();
