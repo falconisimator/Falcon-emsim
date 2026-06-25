@@ -256,6 +256,17 @@ def solve_thermal(state: dict, u: float, t_amb: float, max_iter: int = 8) -> dic
     dT = tedge - t_amb
     p_conv = float(np.sum(hconv_e * dT * Le))
     p_rad = float(np.sum(hrad * dT * Le))
+
+    # per-surface outgoing heat-flux density (W/m^2): how much heat each piece of
+    # surface sheds = convection + radiation-to-ambient + net IR exchange to the
+    # other bars (signed; negative = a face that nets heat IN from a hotter
+    # neighbour). This is the "surface power transfer" map. Integrated over the
+    # surface (sum q*Le) it recovers P_conv + P_rad (the IR exchange nets to ~0).
+    q_ir = eps_e * SIGMA_SB * (F * eps_e[None, :] * (t4[:, None] - t4[None, :])).sum(axis=1)
+    q_surf = hconv_e * dT + hrad * dT + q_ir
+    surf_seg = np.column_stack([nodes[sa, 0], nodes[sa, 1], nodes[sb, 0], nodes[sb, 1], q_surf])
+    surf_qmax = float(np.abs(q_surf).max()) if q_surf.size else 0.0
+
     telem = T[eidx].mean(axis=1)
     p_total = float(np.sum(sploss * A * (1.0 + alel * (telem - T_REF))))
 
@@ -333,6 +344,8 @@ def solve_thermal(state: dict, u: float, t_amb: float, max_iter: int = 8) -> dic
         "ir_pairs": ir_pairs,
         "ir_lines": ir_lines,
         "ir_wmax": ir_wmax,
+        "surf_segments": surf_seg.tolist(),   # [x1,y1,x2,y2,q] surface flux W/m^2
+        "surf_qmax": surf_qmax,
         "conductors": conductors,
         "duct_len": DUCT_LEN,
         "dT_air": float(dT_air),                 # air rise inlet->outlet over the length

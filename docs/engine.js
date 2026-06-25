@@ -126,7 +126,7 @@ EM.drawThermal = function () {
     const tmin = th.Tamb, tmax = Math.max(th.Tmax, tmin + 1e-3);
     const colorOf = (t) => inferno((t - tmin) / (tmax - tmin));
     for (let e = 0; e < n.length; e += 3) if (region[e / 3] >= 10) fill(e, th.T, colorOf);
-  } else { // ir: faint solids so the rays read clearly
+  } else { // ir / surface: faint solids so the overlay reads clearly
     ctx.fillStyle = "#e6e6e6";
     for (let e = 0; e < n.length; e += 3) if (region[e / 3] >= 10) fill(e, null, null);
   }
@@ -148,8 +148,25 @@ EM.drawThermal = function () {
     }
   }
 
+  // surface power transfer: each surface segment colored by how much heat it
+  // sheds (|q''|, W/m^2) -- bright = a face dumping a lot of heat to the air.
+  if (mode === "surface" && th.surf_segments && th.surf_segments.length) {
+    const qmax = th.surf_qmax || 1;
+    ctx.lineCap = "round";
+    for (const s of th.surf_segments) {
+      const f = Math.min(1, Math.abs(s[4]) / qmax);
+      const col = inferno(f);
+      ctx.strokeStyle = `rgb(${col[0]},${col[1]},${col[2]})`;
+      ctx.lineWidth = 1.5 + 3.5 * f;
+      ctx.beginPath(); ctx.moveTo(X(s[0]), Y(s[1])); ctx.lineTo(X(s[2]), Y(s[3])); ctx.stroke();
+    }
+    ctx.lineCap = "butt";
+  }
+
   if (mode === "air") _tbar(ctx, W, H, th.vmax, 0, "m/s", (x) => x.toFixed(2));
   else if (mode === "temp") _tbar(ctx, W, H, Math.max(th.Tmax, th.Tamb + 1e-3), th.Tamb, "°C", (x) => x.toFixed(0));
+  else if (mode === "surface") _tbar(ctx, W, H, th.surf_qmax || 0, 0, "W/m²",
+    (x) => (Math.abs(x) >= 1000 ? (x / 1000).toFixed(1) + "k" : x.toFixed(0)));
   updateThermalReadout();
 };
 
@@ -163,6 +180,18 @@ EM.thermalValueAt = function (px, py) {
   if (mode === "3d") return null;                  // 3D extrusion has its own transform
   const W = cv.width, H = cv.height, ext = d.extent, sc = 0.92 * Math.min(W, H) / (2 * ext);
   const xm = (px - W / 2) / sc, ym = (py - H / 2) / sc;   // thermal canvas has no pan/zoom
+  if (mode === "surface") {   // sample the nearest surface segment's outgoing flux
+    if (!th.surf_segments) return null;
+    let best = null, bd = Infinity;
+    for (const s of th.surf_segments) {
+      const dx = s[2] - s[0], dy = s[3] - s[1], L2 = dx * dx + dy * dy || 1e-12;
+      let tt = ((xm - s[0]) * dx + (ym - s[1]) * dy) / L2; tt = Math.max(0, Math.min(1, tt));
+      const qx = s[0] + tt * dx, qy = s[1] + tt * dy, dist2 = (xm - qx) ** 2 + (ym - qy) ** 2;
+      if (dist2 < bd) { bd = dist2; best = s; }
+    }
+    if (!best || bd > (0.025 * ext) ** 2) return null;   // only near a surface
+    return { text: `q″ = ${fmtVal(best[4])} W/m²${best[4] < 0 ? " (in)" : ""}` };
+  }
   const hit = triAt(d, xm, ym);
   if (!hit) return null;
   const solid = d.region[hit.t] >= 10;
