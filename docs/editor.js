@@ -31,7 +31,6 @@ const snap = (v) => (snapOn ? Math.round(v / GRID) * GRID : v);
 let conductors = [];    // model: list of {id,name,type,w,h,r,x,y,rot,group,material,busbar,node}
 let selected = null;     // representative conductor (drives the property panel)
 let selGroup = [];       // all selected conductors (whole busbar, or one shape in isolation)
-let dragStart = null;    // group-drag bookkeeping
 let uid = 1;
 let editBusbar = null;  // busbar id under isolation editing, or null
 
@@ -43,6 +42,99 @@ const layer = new Konva.Layer();
 stage.add(gridLayer); stage.add(layer);
 const tr = new Konva.Transformer({ rotationSnaps: ROT_SNAPS, rotateAnchorOffset: 24 });
 layer.add(tr);
+
+// ---- busbar coordinate systems --------------------------------------------
+// Each busbar is a Konva.Group carrying that busbar's frame (origin x,y + angle,
+// in world mm; the layer itself is un-transformed). Member shapes live INSIDE
+// the group in busbar-local coordinates and are never recomputed when the busbar
+// moves or rotates -- only the group's transform changes -- so a group stays
+// rigid by construction (no relative drift). World coords are derived (group ∘
+// local) only when needed: rendering is Konva's job, export bakes in toSceneDict.
+const busbarGroups = new Map();   // busbar id -> Konva.Group
+
+function busbarGroup(bb) {
+  let g = busbarGroups.get(bb);
+  if (g) return g;
+  g = new Konva.Group({ x: 0, y: 0, rotation: 0, draggable: true });
+  g.setAttr("busbar", bb);
+  busbarGroups.set(bb, g);
+  layer.add(g);
+  bindGroupDrag(g);
+  tr.moveToTop();
+  return g;
+}
+function membersOf(bb) { return conductors.filter((c) => c.busbar === bb); }
+function dropBusbarIfEmpty(bb) {
+  const g = busbarGroups.get(bb);
+  if (g && !membersOf(bb).length) { g.destroy(); busbarGroups.delete(bb); }
+}
+
+// local (group frame) <-> world mm, with group scale kept at 1 (always baked).
+function localToWorld(g, lx, ly) {
+  const a = (g.rotation() * Math.PI) / 180, cs = Math.cos(a), sn = Math.sin(a);
+  return { x: g.x() + lx * cs - ly * sn, y: g.y() + lx * sn + ly * cs };
+}
+function worldToLocal(g, wx, wy) {
+  const a = (-g.rotation() * Math.PI) / 180, cs = Math.cos(a), sn = Math.sin(a);
+  const dx = wx - g.x(), dy = wy - g.y();
+  return { x: dx * cs - dy * sn, y: dx * sn + dy * cs };
+}
+// area-weighted centroid of a busbar's members, in world mm
+function groupCentroid(g, members) {
+  let sx = 0, sy = 0, sa = 0;
+  for (const m of members) {
+    const a = shapeAreaMM2(m) || 1, w = localToWorld(g, m.x, m.y);
+    sx += a * w.x; sy += a * w.y; sa += a;
+  }
+  return sa ? { x: sx / sa, y: sy / sa } : { x: g.x(), y: g.y() };
+}
+// rotate a whole busbar by deg about a world pivot, touching ONLY the group node
+// (members stay put in local coords -> perfectly rigid, no drift).
+function rotateGroupNode(g, deg, pivot) {
+  const a = (deg * Math.PI) / 180, cs = Math.cos(a), sn = Math.sin(a);
+  const dx = g.x() - pivot.x, dy = g.y() - pivot.y;
+  g.x(pivot.x + dx * cs - dy * sn);
+  g.y(pivot.y + dx * sn + dy * cs);
+  g.rotation(g.rotation() + deg);
+}
+
+// whole-busbar drag (the group is draggable; members are not, so grabbing any
+// member drags the group) + scale bake on transform end.
+function bindGroupDrag(g) {
+  let start = null;
+  g.on("dragstart", () => {
+    const m = membersOf(g.getAttr("busbar"))[0];
+    if (m && !selGroup.includes(m)) select(m);   // grabbing a busbar selects it
+    start = { x: g.x(), y: g.y() };
+  });
+  g.on("dragmove", () => {
+    if (start && snapOn) {   // snap the shared delta so the group lands on-grid, rigidly
+      g.x(start.x + snap(g.x() - start.x));
+      g.y(start.y + snap(g.y() - start.y));
+    }
+    tr.forceUpdate();
+  });
+  g.on("dragend", () => { start = null; updateAreas(); });
+  g.on("transformend", () => { bakeGroupScale(g); tr.forceUpdate(); if (selected) fillProps(selected); updateAreas(); });
+}
+// fold a group-node scale into each member's local size + position, then reset
+// the group scale to 1 (rotation/position stay on the group node). Folding S into
+// the children is exact for positions; sizes use the axis-aligned approximation
+// (matches the prior per-shape bake) when a member is itself rotated.
+function bakeGroupScale(g) {
+  const sx = Math.abs(g.scaleX()), sy = Math.abs(g.scaleY());
+  if (Math.abs(sx - 1) < 1e-9 && Math.abs(sy - 1) < 1e-9) return;
+  for (const m of membersOf(g.getAttr("busbar"))) {
+    m.x *= sx; m.y *= sy;
+    if (m.type === "rect") { m.w = Math.max(GRID, m.w * sx); m.h = Math.max(GRID, m.h * sy); }
+    else m.r = Math.max(GRID, m.r * (sx + sy) / 2);
+    const n = m.node;
+    n.x(m.x); n.y(m.y);
+    if (m.type === "rect") { n.width(m.w); n.height(m.h); n.offset({ x: m.w / 2, y: m.h / 2 }); }
+    else n.radius(m.r);
+  }
+  g.scale({ x: 1, y: 1 });
+}
 
 const MIN_SCALE = PPM / 4, MAX_SCALE = PPM * 12;   // scroll-zoom limits
 function recenter() {
@@ -88,8 +180,11 @@ stage.draggable(true);
 stage.on("dragmove dragend", (e) => { if (e.target === stage) drawGrid(); });
 
 // ---- model <-> Konva ------------------------------------------------------
+// c.x / c.y / c.rot are busbar-LOCAL (inside c's Konva group). Whole-busbar
+// moves/rotations live on the group node (see bindGroupDrag); the member node is
+// draggable only inside isolation, where it edits its own local placement.
 function makeNode(c) {
-  const common = { x: c.x, y: c.y, rotation: c.rot, draggable: true,
+  const common = { x: c.x, y: c.y, rotation: c.rot, draggable: false,
                    fill: nodeColor(c), stroke: "#222", strokeWidth: 0.4 };
   let node;
   if (c.type === "rect")
@@ -98,48 +193,19 @@ function makeNode(c) {
     node = new Konva.Circle({ ...common, radius: c.r });
   node.on("click tap", () => select(c));
   node.on("dblclick dbltap", () => enterIsolation(c.busbar));
-  node.on("dragstart", () => {
-    if (!selGroup.includes(c)) select(c);   // dragging selects the busbar first
-    dragStart = (selGroup.length > 1 && selGroup.includes(c))
-      ? { rx: node.x(), ry: node.y(), members: selGroup.map((m) => ({ m, x: m.node.x(), y: m.node.y() })) }
-      : null;
-  });
-  node.on("dragmove", () => {
-    if (dragStart) {   // move the whole busbar together — rigid; snap the shared
-      // delta (not each piece) so internal offsets stay exact and on-grid.
-      let dx = node.x() - dragStart.rx, dy = node.y() - dragStart.ry;
-      if (snapOn) { dx = snap(dx); dy = snap(dy); }
-      for (const it of dragStart.members) {
-        it.m.node.x(it.x + dx); it.m.node.y(it.y + dy);   // every member, incl. the grabbed one
-      }
-      tr.forceUpdate();   // keep the selection box on the moving group
-    } else {             // single shape — snap to grid (when enabled)
-      node.x(snap(node.x())); node.y(snap(node.y()));
-    }
-  });
-  node.on("dragend", () => {
-    if (dragStart) { dragStart.members.forEach((it) => syncFromNode(it.m, false)); dragStart = null; }
-    else syncFromNode(c, true);
-    if (selected === c) fillProps(c);
-    tr.forceUpdate(); updateAreas();
-  });
-  // rotate/scale via the transformer handles — bake the accumulated scale &
-  // rotation into the model once the gesture ends (works for a whole group).
-  node.on("transformend", () => {
-    const grp = selGroup.length > 1 && selGroup.includes(c) ? selGroup : [c];
-    grp.forEach((m) => bakeNode(m, selGroup.length <= 1));
-    tr.forceUpdate();
-    if (selected) fillProps(selected);
-    updateAreas();
-  });
+  // member-level drag/transform: only reachable in isolation (single shape).
+  node.on("dragmove", () => { node.x(snap(node.x())); node.y(snap(node.y())); });
+  node.on("dragend", () => { syncFromNode(c, true); if (selected === c) fillProps(c); tr.forceUpdate(); updateAreas(); });
+  node.on("transformend", () => { bakeNode(c, true); tr.forceUpdate(); if (selected) fillProps(selected); updateAreas(); });
   c.node = node;
-  layer.add(node);
+  busbarGroup(c.busbar).add(node);   // into the busbar's coordinate system
+  tr.moveToTop();
   styleNode(c);   // apply Air faint/dashed styling if needed
   return node;
 }
-// commit a node's transform (scale folded into size, rotation, position) into
-// the model. doSnap: snap size+centre to the grid — true only for single-shape
-// edits; a rotated/scaled group is committed exactly so it stays rigid.
+// commit a member node's transform (scale folded into size, rotation, position)
+// into the model, in busbar-LOCAL coords. Used for single-shape edits in
+// isolation; doSnap snaps size + centre + angle to the grid.
 function bakeNode(c, doSnap) {
   const n = c.node, sp = (v) => (doSnap ? snap(v) : v);
   const sx = Math.abs(n.scaleX()), sy = Math.abs(n.scaleY());
@@ -286,14 +352,17 @@ function enterIsolation(bb) {
 }
 function exitIsolation() {
   editBusbar = null;
-  conductors.forEach((c) => { c.node.opacity(1); c.node.draggable(true); c.node.listening(true); });
+  for (const g of busbarGroups.values()) g.draggable(true);   // whole-busbar drag again
+  conductors.forEach((c) => { c.node.draggable(false); c.node.listening(true); styleNode(c); });
   document.getElementById("isoBadge").textContent = "";
   layer.batchDraw();
 }
 function applyIsolation() {
+  for (const g of busbarGroups.values()) g.draggable(false);  // edit members, not the frame
   conductors.forEach((c) => {
     const member = c.busbar === editBusbar;
-    c.node.opacity(member ? 1 : 0.22);
+    styleNode(c);                                   // base fill/opacity (Air stays faint)
+    if (!member) c.node.opacity(0.22);              // fade the rest
     c.node.draggable(member);
     c.node.listening(member);
   });
@@ -308,39 +377,40 @@ function select(c) {
   selGroup.forEach((m) => setHighlight(m, false));   // clear previous
   if (!c) { selected = null; selGroup = []; tr.nodes([]); $("propPanel").hidden = true; layer.batchDraw(); return; }
   selected = c;
-  // single click selects the whole busbar (so it moves together); inside
-  // isolation only the clicked shape is selected (edit it individually).
-  selGroup = editBusbar ? [c] : conductors.filter((k) => k.busbar === c.busbar);
+  // normal click selects the whole busbar (the transformer drives its group node,
+  // so move/rotate are rigid); inside isolation it selects just the clicked shape.
+  const iso = !!editBusbar;
+  selGroup = iso ? [c] : membersOf(c.busbar);
   selGroup.forEach((m) => setHighlight(m, true));
-  // one transformer over the whole selection: drag the rotate "hair" to spin the
-  // group, the corner/edge anchors to scale it (all about the group centre).
   const hasCircle = selGroup.some((m) => m.type === "circle");
-  tr.nodes(selGroup.map((m) => m.node));
-  // 15° angle snap only when manipulating a single shape with snap enabled;
-  // a group rotates freely so you can dial in any angle.
-  tr.rotationSnaps(snapOn && selGroup.length === 1 ? ROT_SNAPS : []);
-  tr.keepRatio(hasCircle);   // keep circles round (and multi-shape aspect locked)
+  // isolation drives the member node; otherwise the busbar's group node (one
+  // rigid transform for the whole bar — rotate hair to spin, anchors to scale).
+  tr.nodes([iso ? c.node : busbarGroup(c.busbar)]);
+  // 15° angle snap only for a single shape in isolation; a busbar rotates freely.
+  tr.rotationSnaps(snapOn && iso ? ROT_SNAPS : []);
+  tr.keepRatio(hasCircle);   // keep circles round (and mixed-circle aspect locked)
   tr.enabledAnchors(hasCircle
     ? ["top-left", "top-right", "bottom-left", "bottom-right"]
     : ["top-left", "top-center", "top-right", "middle-left",
        "middle-right", "bottom-left", "bottom-center", "bottom-right"]);
+  tr.moveToTop();
   $("propPanel").hidden = false;
   fillProps(c);
   layer.batchDraw();
 }
 
-// rotate the selected busbar (or shape) about its area-weighted centroid
+// rotate the selection: a member about its own centre (isolation), or the whole
+// busbar about its area-weighted centroid -- the latter only moves the group
+// node, so members stay rigid (no relative drift).
 function rotateGroup(deg) {
   if (!selGroup.length) return;
-  let sx = 0, sy = 0, sa = 0;
-  for (const m of selGroup) { const a = shapeAreaMM2(m) || 1; sx += a * m.x; sy += a * m.y; sa += a; }
-  const cx = sx / sa, cy = sy / sa, th = (deg * Math.PI) / 180, cs = Math.cos(th), sn = Math.sin(th);
-  for (const m of selGroup) {
-    const dx = m.x - cx, dy = m.y - cy;
-    m.x = cx + dx * cs - dy * sn;          // orbit each piece about the centroid
-    m.y = cy + dx * sn + dy * cs;
-    m.rot = (((m.rot + deg) % 360) + 540) % 360 - 180;   // and spin it, kept in [-180,180]
-    const n = m.node; n.x(m.x); n.y(m.y); n.rotation(m.rot);
+  if (editBusbar) {
+    const c = selGroup[0];
+    c.rot = (((c.rot + deg) % 360) + 540) % 360 - 180;
+    c.node.rotation(c.rot);
+  } else {
+    const g = busbarGroup(selected.busbar);
+    rotateGroupNode(g, deg, groupCentroid(g, selGroup));
   }
   if (tr.nodes().length) tr.forceUpdate();
   if (selected) fillProps(selected);
@@ -360,36 +430,52 @@ stage.on("mousemove", () => { if (drawMode) updateRubber(); });
 
 // ---- properties panel -----------------------------------------------------
 const $ = (id) => document.getElementById(id);
+const r2 = (v) => Math.round(v * 100) / 100;   // tidy display of derived floats
 function fillProps(c) {
-  const single = selGroup.length <= 1;   // geometry is per-shape; edit multi via isolation
+  const iso = !!editBusbar;
+  const g = busbarGroup(c.busbar);
+  // X/Y/W/H are per-shape: editable in isolation, or for a one-shape busbar.
+  const geomEditable = iso || membersOf(c.busbar).length === 1;
   $("pW").value = c.type === "rect" ? c.w : c.r;
   $("pH").value = c.h;
   $("pHlabel").parentElement.style.display = c.type === "rect" ? "" : "none";
-  $("pX").value = c.x; $("pY").value = c.y; $("pRot").value = c.rot;
+  if (iso) {                                   // member-local placement
+    $("pX").value = r2(c.x); $("pY").value = r2(c.y); $("pRot").value = r2(c.rot);
+  } else {                                      // world placement + busbar angle
+    const w = localToWorld(g, c.x, c.y);
+    $("pX").value = r2(w.x); $("pY").value = r2(w.y); $("pRot").value = r2(g.rotation());
+  }
   $("pPhase").value = c.group == null ? (c.floating ? "F" : "P") : c.group; $("pMat").value = c.material;
-  // size/position are per-shape (edit a group's pieces via isolation); rotation
-  // works on a group too — it spins the whole busbar to the typed angle.
-  for (const id of ["pW", "pH", "pX", "pY"]) $(id).disabled = !single;
+  for (const id of ["pW", "pH", "pX", "pY"]) $(id).disabled = !geomEditable;
   $("pRot").disabled = false;
+}
+function applyShapeSize(c) {
+  const n = c.node;
+  if (c.type === "rect") { c.w = snap(+$("pW").value); c.h = snap(+$("pH").value); n.width(c.w); n.height(c.h); n.offset({ x: c.w / 2, y: c.h / 2 }); }
+  else { c.r = snap(+$("pW").value); n.radius(c.r); }
 }
 // doGeom: only re-apply geometry when a geometry field changed — editing phase/
 // material must NOT re-snap a sub-grid wall thickness (snap(3mm)->5mm) etc.
 function readProps(doGeom) {
   const c = selected; if (!c) return;
-  const single = selGroup.length <= 1;
+  const iso = !!editBusbar;
+  const g = busbarGroup(c.busbar);
   if (doGeom) {
-    if (single) {   // geometry applies to the one shape
-      if (c.type === "rect") { c.w = snap(+$("pW").value); c.h = snap(+$("pH").value); }
-      else c.r = snap(+$("pW").value);
+    if (iso) {   // edit the one member's LOCAL placement
+      applyShapeSize(c);
       c.x = snap(+$("pX").value); c.y = snap(+$("pY").value); c.rot = +$("pRot").value;
-      const n = c.node;
-      n.x(c.x); n.y(c.y); n.rotation(c.rot);
-      if (c.type === "rect") { n.width(c.w); n.height(c.h); n.offset({ x: c.w / 2, y: c.h / 2 }); }
-      else n.radius(c.r);
-    } else {        // group: rotate the whole busbar to the typed angle (about its centroid)
-      const delta = (+$("pRot").value) - c.rot;
-      if (delta) rotateGroup(delta);
+      c.node.x(c.x); c.node.y(c.y); c.node.rotation(c.rot);
+    } else {     // busbar: rotate the group to the typed angle, then (one-shape only)
+      const dRot = (+$("pRot").value) - g.rotation();   // size + move via the group frame
+      if (dRot) rotateGroupNode(g, dRot, groupCentroid(g, selGroup));
+      if (membersOf(c.busbar).length === 1) {
+        applyShapeSize(c);
+        const want = { x: snap(+$("pX").value), y: snap(+$("pY").value) };
+        const cur = localToWorld(g, c.x, c.y);
+        g.x(g.x() + (want.x - cur.x)); g.y(g.y() + (want.y - cur.y));   // shift frame so the shape lands at (X,Y)
+      }
     }
+    if (tr.nodes().length) tr.forceUpdate();
   }
   // phase + material apply to the whole busbar. "P"/"F" = passive (group null);
   // "F" additionally floats (net current forced to 0); "P" is bonded (V̇/L=0).
@@ -440,19 +526,24 @@ function toSceneDict(skipAir) {
     line_current: +$("current").value, boundary: "dirichlet", order: 1,
     domain_radius: 0, lc_surface: 0, lc_far: 0, group_currents: {},
     mesh_scale: +$("meshScale").value,
-    conductors: cs.map((c) => ({
-      name: c.name,
-      shape: c.type === "rect"
-        ? { type: "rect", width: c.w / 1000, height: c.h / 1000 }
-        : { type: "circle", radius: c.r / 1000 },
-      placement: [c.x / 1000, c.y / 1000, c.rot],
-      material: MAT[c.material], group: c.group, busbar: c.busbar,
-      floating: !!c.floating,
-    })),
+    conductors: cs.map((c) => {
+      const w = localToWorld(busbarGroup(c.busbar), c.x, c.y);   // bake group ∘ local -> world
+      return {
+        name: c.name,
+        shape: c.type === "rect"
+          ? { type: "rect", width: c.w / 1000, height: c.h / 1000 }
+          : { type: "circle", radius: c.r / 1000 },
+        placement: [w.x / 1000, w.y / 1000, busbarGroup(c.busbar).rotation() + c.rot],
+        material: MAT[c.material], group: c.group, busbar: c.busbar,
+        floating: !!c.floating,
+      };
+    }),
   };
 }
 function loadSceneDict(d) {
   conductors.forEach((c) => c.node.destroy());
+  for (const g of busbarGroups.values()) g.destroy();
+  busbarGroups.clear();
   conductors = []; selected = null; selGroup = []; tr.nodes([]);
   uid = 1;
   $("freq").value = d.frequency; $("threephase").checked = d.three_phase;
@@ -476,16 +567,19 @@ function loadSceneDict(d) {
 $("addBar").onclick = () => addConductor("rect", "A");
 $("addRound").onclick = () => addConductor("circle", "A");
 $("wallBtn").onclick = startWallMode;
-$("del").onclick = () => { if (selected) { selected.node.destroy(); conductors = conductors.filter((c) => c !== selected); select(null); layer.batchDraw(); updateAreas(); } };
+$("del").onclick = () => { if (selected) { const bb = selected.busbar; selected.node.destroy(); conductors = conductors.filter((c) => c !== selected); dropBusbarIfEmpty(bb); select(null); layer.batchDraw(); updateAreas(); } };
 
 // ---- copy / paste geometry ------------------------------------------------
-let clipboard = [];
+let clipboard = [];          // member snapshots (local coords)
+let clipboardGroups = {};    // source busbar id -> {x,y,rot} group frame
 function copySelection() {
-  let src;
-  if (editBusbar) src = conductors.filter((c) => c.busbar === editBusbar);  // whole busbar
-  else if (selected) src = conductors.filter((c) => c.busbar === selected.busbar);
-  else return;
+  const bb = editBusbar || (selected && selected.busbar);
+  if (!bb) return;
+  const src = membersOf(bb);
   clipboard = src.map((c) => ({ ...c, node: undefined }));  // snapshot, drop node ref
+  clipboardGroups = {};
+  const g = busbarGroups.get(bb);
+  clipboardGroups[bb] = g ? { x: g.x(), y: g.y(), rot: g.rotation() } : { x: 0, y: 0, rot: 0 };
   document.getElementById("isoBadge").textContent = `copied ${clipboard.length} shape(s)`;
 }
 function pasteClipboard() {
@@ -494,11 +588,16 @@ function pasteClipboard() {
   const remap = {};
   let first = null;
   for (const s of clipboard) {
-    if (!(s.busbar in remap)) remap[s.busbar] = "bb" + uid++;  // each source busbar -> new id
-    const c = { ...s, node: undefined, id: uid, name: "C" + uid,
-                busbar: remap[s.busbar], x: s.x + step, y: s.y + step };
+    if (!(s.busbar in remap)) {        // each source busbar -> a new id + a shifted frame
+      const nb = "bb" + uid++;
+      remap[s.busbar] = nb;
+      const src = clipboardGroups[s.busbar] || { x: 0, y: 0, rot: 0 };
+      const g = busbarGroup(nb);
+      g.x(src.x + step); g.y(src.y + step); g.rotation(src.rot);   // shift world by step, keep angle
+    }
+    const c = { ...s, node: undefined, id: uid, name: "C" + uid, busbar: remap[s.busbar] };
     uid++;
-    conductors.push(c); makeNode(c);
+    conductors.push(c); makeNode(c);   // member keeps its local coords inside the new frame
     first = first || c;
   }
   exitIsolation();
@@ -602,12 +701,17 @@ function renderThermal() {
 // ---- representative pseudo-3D: extrude the cross-section to the 1 m length,
 // colored by the inlet->outlet temperature gradient; drag to rotate. ---------
 EM._3d = { az: 0.6, el: 0.5 };
+// world-space (mm) placement of a member = busbar frame ∘ its local placement
+function conductorWorld(c) {
+  const g = busbarGroup(c.busbar), w = localToWorld(g, c.x, c.y);
+  return { x: w.x, y: w.y, rot: g.rotation() + c.rot };
+}
 function shapeOutline(c) {                       // world-space (mm) cross-section ring
   let pts;
   if (c.type === "rect") { const hw = c.w / 2, hh = c.h / 2; pts = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]]; }
   else { pts = []; for (let i = 0; i < 16; i++) { const a = 2 * Math.PI * i / 16; pts.push([c.r * Math.cos(a), c.r * Math.sin(a)]); } }
-  const th = (c.rot * Math.PI) / 180, cs = Math.cos(th), sn = Math.sin(th);
-  return pts.map(([lx, ly]) => [c.x + cs * lx - sn * ly, c.y + sn * lx + cs * ly]);
+  const wc = conductorWorld(c), th = (wc.rot * Math.PI) / 180, cs = Math.cos(th), sn = Math.sin(th);
+  return pts.map(([lx, ly]) => [wc.x + cs * lx - sn * ly, wc.y + sn * lx + cs * ly]);
 }
 function draw3D() {
   const th = EM._thermal; if (!th || !conductors.length) return;
@@ -616,7 +720,7 @@ function draw3D() {
   const tmap = {}; th.conductors.forEach((c) => (tmap[c.name] = c.Tmean));
   const Tmin = th.Tamb, Tmax = Math.max(th.bar_max_out, Tmin + 1e-3), dT = th.dT_air || 0, L = (th.duct_len || 1) * 1000;
   const live = conductors.filter((c) => c.material !== "Air");
-  let cx = 0, cy = 0; for (const c of live) { cx += c.x; cy += c.y; } cx /= live.length || 1; cy /= live.length || 1;
+  let cx = 0, cy = 0; for (const c of live) { const w = conductorWorld(c); cx += w.x; cy += w.y; } cx /= live.length || 1; cy /= live.length || 1;
   const a = EM._3d.az, e = EM._3d.el, ca = Math.cos(a), sa = Math.sin(a), ce = Math.cos(e), se = Math.sin(e);
   const proj = (x, y, z) => {                    // mm -> projection plane (centered)
     const X = x - cx, Y = -(y - cy), Z = z - L / 2;
@@ -627,13 +731,14 @@ function draw3D() {
   const faces = [];
   for (const c of live) {
     const ring = shapeOutline(c), M = ring.length, T0 = tmap[c.name] != null ? tmap[c.name] : Tmin;
+    const wc = conductorWorld(c);
     for (let i = 0; i < M; i++) {                 // side faces
       const p = ring[i], q = ring[(i + 1) % M];
       const f = [proj(p[0], p[1], 0), proj(q[0], q[1], 0), proj(q[0], q[1], L), proj(p[0], p[1], L)];
       faces.push({ pts: f, depth: (f[0][2] + f[1][2] + f[2][2] + f[3][2]) / 4, fill: col(T0 + dT * 0.5) });
     }
-    faces.push({ pts: ring.map((p) => proj(p[0], p[1], 0)), depth: proj(c.x, c.y, 0)[2], fill: col(T0) });           // inlet
-    faces.push({ pts: ring.map((p) => proj(p[0], p[1], L)), depth: proj(c.x, c.y, L)[2], fill: col(T0 + dT) });      // outlet
+    faces.push({ pts: ring.map((p) => proj(p[0], p[1], 0)), depth: proj(wc.x, wc.y, 0)[2], fill: col(T0) });           // inlet
+    faces.push({ pts: ring.map((p) => proj(p[0], p[1], L)), depth: proj(wc.x, wc.y, L)[2], fill: col(T0 + dT) });      // outlet
   }
   let umin = 1e9, umax = -1e9, vmin = 1e9, vmax = -1e9;
   for (const f of faces) for (const p of f.pts) { umin = Math.min(umin, p[0]); umax = Math.max(umax, p[0]); vmin = Math.min(vmin, p[1]); vmax = Math.max(vmax, p[1]); }
