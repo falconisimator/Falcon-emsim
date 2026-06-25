@@ -134,6 +134,9 @@
           <span id="thermalStatus" class="muted"></span>
         </div>
         <canvas id="thermalCanvas"></canvas>
+        <div id="thermalReadout" style="position:absolute;pointer-events:none;display:none;z-index:5;
+             background:rgba(20,22,26,.92);color:#fff;padding:3px 7px;border-radius:4px;font-size:12px;
+             font-variant-numeric:tabular-nums;white-space:nowrap;box-shadow:0 1px 4px #0006"></div>
         <div id="thermalSummary" style="position:absolute;left:14px;bottom:14px;max-width:440px;
              background:rgba(20,22,26,.92);color:#eee;padding:10px 12px;border-radius:6px;font-size:12px;
              line-height:1.5;box-shadow:0 2px 10px #0006;display:none"></div>
@@ -198,7 +201,7 @@
   <div id="progress"><div id="progressBar"></div></div>
 
   <script src="https://unpkg.com/konva@9/konva.min.js"></script>
-  <script src="engine.js?v=39"></script>
-  <script src="editor.js?v=39"></script>
+  <script src="engine.js?v=40"></script>
+  <script src="editor.js?v=40"></script>
 </body>
 </html>

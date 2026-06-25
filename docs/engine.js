@@ -150,7 +150,57 @@ EM.drawThermal = function () {
 
   if (mode === "air") _tbar(ctx, W, H, th.vmax, 0, "m/s", (x) => x.toFixed(2));
   else if (mode === "temp") _tbar(ctx, W, H, Math.max(th.Tmax, th.Tamb + 1e-3), th.Tamb, "°C", (x) => x.toFixed(0));
+  updateThermalReadout();
 };
+
+// ---- thermal hover value readout (mirrors the EM field readout) -----------
+// Sample the temperature / airspeed at a thermal-canvas pixel for the active
+// view. Temperature is solved on the solids only; airspeed on the air only.
+EM.thermalValueAt = function (px, py) {
+  const d = EM._data, th = EM._thermal, cv = document.getElementById("thermalCanvas");
+  if (!d || !th || !cv) return null;
+  const mode = EM._thermalView || "temp";
+  if (mode === "3d") return null;                  // 3D extrusion has its own transform
+  const W = cv.width, H = cv.height, ext = d.extent, sc = 0.92 * Math.min(W, H) / (2 * ext);
+  const xm = (px - W / 2) / sc, ym = (py - H / 2) / sc;   // thermal canvas has no pan/zoom
+  const hit = triAt(d, xm, ym);
+  if (!hit) return null;
+  const solid = d.region[hit.t] >= 10;
+  const n = d.tris, i0 = n[hit.t * 3], i1 = n[hit.t * 3 + 1], i2 = n[hit.t * 3 + 2];
+  const interp = (arr) => hit.w0 * arr[i0] + hit.w1 * arr[i1] + hit.w2 * arr[i2];
+  if (mode === "air") {
+    if (solid || !th.vair) return { text: "solid" };
+    return { text: `v = ${fmtVal(interp(th.vair))} m/s` };
+  }
+  // temp / ir: temperature lives on the solids
+  if (!solid) return { text: "air" };
+  return { text: `T = ${fmtVal(interp(th.T))} °C` };
+};
+function updateThermalReadout() {
+  const el = document.getElementById("thermalReadout"), h = EM._thermalHover;
+  if (!el) return;
+  if (!h || !h.active || !EM._data || !EM._thermal) { el.style.display = "none"; return; }
+  const r = EM.thermalValueAt(h.px, h.py);
+  if (!r) { el.style.display = "none"; return; }
+  el.textContent = r.text;
+  el.style.left = h.ox + "px"; el.style.top = h.oy + "px"; el.style.display = "block";
+}
+(function bindThermalHover() {
+  const cv = document.getElementById("thermalCanvas"),
+        view = document.getElementById("thermalView");
+  if (!cv || !view) return;
+  EM._thermalHover = { active: false, px: 0, py: 0, ox: 0, oy: 0 };
+  cv.addEventListener("mousemove", (e) => {
+    if (EM._thermalView === "3d") { EM._thermalHover.active = false; updateThermalReadout(); return; }
+    const r = cv.getBoundingClientRect(), o = view.getBoundingClientRect();
+    EM._thermalHover.px = (e.clientX - r.left) * (cv.width / r.width);
+    EM._thermalHover.py = (e.clientY - r.top) * (cv.height / r.height);
+    EM._thermalHover.ox = e.clientX - o.left + 14; EM._thermalHover.oy = e.clientY - o.top + 14;
+    EM._thermalHover.active = true;
+    updateThermalReadout();
+  });
+  cv.addEventListener("mouseleave", () => { EM._thermalHover.active = false; updateThermalReadout(); });
+})();
 
 // edges shared by two triangles of different region = conductor / material outline
 function computeEdges(d) {
