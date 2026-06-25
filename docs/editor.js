@@ -150,13 +150,14 @@ function bakeNode(c, doSnap) {
     const r = Math.max(GRID, sp(n.radius() * sx));
     n.scaleX(1); n.scaleY(1); c.r = r; n.radius(r);
   }
-  c.rot = Math.round(n.rotation());
+  c.rot = doSnap ? Math.round(n.rotation()) : n.rotation();
   c.x = sp(n.x()); c.y = sp(n.y());
   n.x(c.x); n.y(c.y);
 }
 function syncFromNode(c, doSnap = true) {   // commit Konva node back to the model
   const n = c.node, sp = (v) => (doSnap ? snap(v) : v);
-  c.x = sp(n.x()); c.y = sp(n.y()); c.rot = Math.round(n.rotation());
+  c.x = sp(n.x()); c.y = sp(n.y());
+  c.rot = doSnap ? Math.round(n.rotation()) : n.rotation();   // group moves keep exact angle
   n.x(c.x); n.y(c.y);
   if (c.type === "rect") {
     c.w = sp(n.width()); c.h = sp(n.height());
