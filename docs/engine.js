@@ -594,6 +594,23 @@ EM.play = function () {
 };
 EM.stop = function () { if (EM._anim) cancelAnimationFrame(EM._anim); EM._anim = null; };
 
+// Synchronous period-sum utilization map (same math as sumOverPeriod, no
+// animation) — used to grab a steady "util" frame for a GIF without the buildup.
+EM.computeUtilMap = function (frames = 90) {
+  const d = EM._data; if (!d) return null;
+  const n = d.tris.length / 3, acc = new Float64Array(n), util = new Float64Array(n);
+  for (let k = 0; k < frames; k++) {
+    const phi = (2 * Math.PI * k) / frames, c = Math.cos(phi), s = Math.sin(phi);
+    for (let t = 0; t < n; t++) { const j = d.J_re[t] * c - d.J_im[t] * s; acc[t] += j * j; }
+  }
+  for (let t = 0; t < n; t++) {
+    const amp = Math.hypot(d.javg_re[t], d.javg_im[t]);
+    util[t] = amp > 0 ? Math.sqrt((2 * acc[t]) / frames) / amp : -1;
+  }
+  EM._util = util;
+  return util;
+};
+
 // Sum the instantaneous current over one period -> steady under/over-utilization.
 // Accumulates J(t)^2 frame by frame (visibly building up); converges to the RMS
 // ratio |J|/(I/A): 1 = fair share, >1 over-utilized, <1 under-utilized.

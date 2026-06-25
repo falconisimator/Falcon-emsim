@@ -101,6 +101,7 @@
           <button id="info" title="What is this view?">ⓘ Info</button>
           <button id="play">▶ Animate</button>
           <button id="staticBtn">Static</button>
+          <button id="saveGif" title="Export this view as an animated GIF (one AC period)">⤓ GIF</button>
           <label style="margin:0 0 0 8px">Speed</label>
           <input id="speed" type="range" min="1500" max="10000" value="5000" step="500" style="width:120px" />
         </div>
@@ -132,6 +133,7 @@
             <option value="ir">IR exchange</option>
             <option value="3d">3D (1 m length)</option>
           </select>
+          <button id="thermalGif" title="Export this view as a GIF (3D spins a full turn)">⤓ GIF</button>
           <span id="thermalStatus" class="muted"></span>
         </div>
         <canvas id="thermalCanvas"></canvas>
@@ -202,7 +204,8 @@
   <div id="progress"><div id="progressBar"></div></div>
 
   <script src="https://unpkg.com/konva@9/konva.min.js"></script>
-  <script src="engine.js?v=44"></script>
-  <script src="editor.js?v=44"></script>
+  <script src="gif.js?v=45"></script>
+  <script src="engine.js?v=45"></script>
+  <script src="editor.js?v=45"></script>
 </body>
 </html>

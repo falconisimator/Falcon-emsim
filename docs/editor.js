@@ -776,6 +776,30 @@ $("thermalField").addEventListener("change", (e) => {
   EM._thermalView = e.target.value;
   if (EM._thermal) renderThermal();
 });
+// GIF of the thermal view: the 3D view spins a full turn; the flat maps
+// (temperature / surface flux / airflow / IR) are still, so a single frame.
+async function exportThermalGif() {
+  if (!EM._thermal || typeof GIFENC === "undefined") return;
+  const btn = $("thermalGif"); btn.disabled = true;
+  const cv = $("thermalCanvas"), mode = EM._thermalView || "temp";
+  renderThermal();                                   // size the canvas
+  const scr = _gifScratch(cv);
+  const frames = [];
+  if (mode === "3d") {
+    const base = EM._3d.az, N = 48;
+    for (let i = 0; i < N; i++) {
+      EM._3d.az = base + (2 * Math.PI * i) / N; draw3D();
+      frames.push(_grab(scr, cv));
+      if (i % 8 === 0) { $("thermalStatus").textContent = `rendering GIF… ${i + 1}/${N}`; await _raf(); }
+    }
+    EM._3d.az = base; draw3D();
+  } else {
+    renderThermal();
+    frames.push(_grab(scr, cv));
+  }
+  await _saveGif(btn, "thermalStatus", frames, scr, `emsim_thermal_${mode}.gif`);
+}
+$("thermalGif").onclick = exportThermalGif;
 // keep the in-view buttons working, now as view switches
 function showFieldView() { setView("em"); }
 function hideFieldView() { setView("designer"); }
@@ -859,6 +883,56 @@ $("staticBtn").onclick = () => {
   if ($("field").value === "util" && !EM._util) EM.sumOverPeriod();  // need the map first
   else EM.drawFrame(0);
 };
+
+// ---- GIF export -----------------------------------------------------------
+const _raf = () => new Promise((r) => requestAnimationFrame(r));
+// downsample the source canvas to a scratch canvas (cap longest side) and read
+// its pixels — keeps the GIF a sensible size regardless of the window.
+function _gifScratch(src, maxSide = 640) {
+  const W = src.width, H = src.height, s = Math.min(1, maxSide / Math.max(W, H));
+  const cv = document.createElement("canvas");
+  cv.width = Math.max(1, Math.round(W * s)); cv.height = Math.max(1, Math.round(H * s));
+  return { cv, ctx: cv.getContext("2d") };
+}
+function _grab(scr, src) {
+  scr.ctx.clearRect(0, 0, scr.cv.width, scr.cv.height);
+  scr.ctx.drawImage(src, 0, 0, scr.cv.width, scr.cv.height);
+  return scr.ctx.getImageData(0, 0, scr.cv.width, scr.cv.height).data;
+}
+async function _saveGif(btn, statusId, frames, scr, name, status) {
+  try {
+    $(statusId).textContent = status || "encoding GIF…";
+    await _raf();
+    const bytes = GIFENC.encode(frames, { width: scr.cv.width, height: scr.cv.height, delay: 4, loop: 0 });
+    GIFENC.download(bytes, name);
+    $(statusId).textContent = `saved ${name} (${(bytes.length / 1024).toFixed(0)} KB)`;
+  } catch (err) {
+    $(statusId).textContent = "GIF export failed: " + err; console.error(err);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+async function exportFieldGif() {
+  if (!EM._data || typeof GIFENC === "undefined") return;
+  const btn = $("saveGif"); btn.disabled = true;
+  EM.stop();
+  const sel = $("field").value, cv = $("fieldCanvas");
+  EM.drawFrame(0);                                   // size the canvas to its container
+  const scr = _gifScratch(cv);
+  const isStatic = sel === "P" || sel === "util";
+  if (sel === "util" && !EM._util) EM.computeUtilMap();
+  const N = isStatic ? 1 : 36;                        // one electrical period
+  const frames = [];
+  for (let i = 0; i < N; i++) {
+    if (sel === "util") EM.drawFrame(0, EM._util);
+    else EM.drawFrame((2 * Math.PI * i) / N);
+    frames.push(_grab(scr, cv));
+    if (i % 6 === 0) { $("status").textContent = `rendering GIF… ${i + 1}/${N}`; await _raf(); }
+  }
+  await _saveGif(btn, "status", frames, scr, `emsim_${sel}.gif`);
+  EM.drawFrame(0);
+}
+$("saveGif").onclick = exportFieldGif;
 
 // ---- default scene + boot --------------------------------------------------
 function defaultScene() {
