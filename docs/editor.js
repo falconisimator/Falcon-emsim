@@ -105,11 +105,12 @@ function makeNode(c) {
       : null;
   });
   node.on("dragmove", () => {
-    if (dragStart) {   // move the whole busbar together — rigid, never snapped
-      const dx = node.x() - dragStart.rx, dy = node.y() - dragStart.ry;
+    if (dragStart) {   // move the whole busbar together — rigid; snap the shared
+      // delta (not each piece) so internal offsets stay exact and on-grid.
+      let dx = node.x() - dragStart.rx, dy = node.y() - dragStart.ry;
+      if (snapOn) { dx = snap(dx); dy = snap(dy); }
       for (const it of dragStart.members) {
-        if (it.m === c) continue;
-        it.m.node.x(it.x + dx); it.m.node.y(it.y + dy);
+        it.m.node.x(it.x + dx); it.m.node.y(it.y + dy);   // every member, incl. the grabbed one
       }
       tr.forceUpdate();   // keep the selection box on the moving group
     } else {             // single shape — snap to grid (when enabled)
